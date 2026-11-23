@@ -1,9 +1,9 @@
 """链接解析的公共契约。
 
 ⚠️ 合规提示
-    本包仅用于处理你自己拥有版权的内容，或已获得授权的内容。
-    默认关闭（EXTRACTORS_ENABLED=false）。仓库内不含任何平台的
-    签名密钥、登录 Cookie 或其他绕过手段。
+    链接解析默认开启（EXTRACTORS_ENABLED=true）—— 这个工具的定位就是
+    「贴链接 → 出文字」，上传文件只是并行能力。合规兜底保留：显式设为
+    false 可整体关闭。仓库内不含任何平台的签名密钥、登录 Cookie 或其他绕过手段。
 """
 
 from __future__ import annotations
@@ -39,6 +39,42 @@ class ExtractContext:
     proxy: str | None = None
     cookie_file: str | None = None
     timeout: int = 60
+    # 长内容护栏（None 表示不限制）。适配器在「能提前知道时长/体积」时
+    # 应该先自查再下载——两小时播客的 m4a 有两百多 MB，下完再拒绝很浪费。
+    max_duration_sec: float | None = None
+    max_bytes: int | None = None
+    site: str = ""
+
+    def check_duration(self, seconds: float | None, *, site: str = "") -> None:
+        """时长超限直接抛错。seconds 未知（None/0）时放行。"""
+        if not seconds or not self.max_duration_sec:
+            return
+        if seconds <= self.max_duration_sec:
+            return
+        name = site or self.site or "该内容"
+        limit_min = int(self.max_duration_sec // 60)
+        raise ExtractError(
+            f"{name}时长 {seconds / 60:.0f} 分钟，超过上限 {limit_min} 分钟，未开始处理。"
+            f"超长内容会切分成上百个片段，失败成本很高。"
+            f"确实要处理请调大 MAX_MEDIA_DURATION_MIN（设为 0 关闭限制）。"
+        )
+
+    def check_content_length(self, header: object, *, site: str = "") -> None:
+        """按 Content-Length 预判体积。拿不到这个头时放行，由下载循环兜底。"""
+        if not self.max_bytes:
+            return
+        try:
+            size = int(str(header))
+        except (TypeError, ValueError):
+            return
+        if size <= self.max_bytes:
+            return
+        name = site or self.site or "该内容"
+        raise ExtractError(
+            f"{name}媒体体积约 {size // (1024 * 1024)}MB，超过上限 "
+            f"{self.max_bytes // (1024 * 1024)}MB。"
+            f"可调大 MAX_MEDIA_SIZE_MB（设为 0 关闭限制）。"
+        )
 
 
 @runtime_checkable

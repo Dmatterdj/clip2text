@@ -92,6 +92,9 @@ class FasterWhisperEngine(BaseEngine):
                 language=language,
                 vad_filter=True,
                 beam_size=5,
+                # 与 mlx 引擎同理：中文不给标点示范会输出
+                # "- 我是森森" 这类无标点文本
+                initial_prompt=_initial_prompt(language),
             )
             segments: list[Segment] = []
             parts: list[str] = []
@@ -123,3 +126,15 @@ def _cuda_available() -> bool:
 
 def _is_cjk(lang: str | None) -> bool:
     return (lang or "").lower() in {"zh", "ja", "ko", "yue"}
+
+_PROMPT_CJK = "以下是普通话播客的转写，使用标准中文标点：，。？！"
+_PROMPT_JA = "以下は日本語のポッドキャストの文字起こしです。句読点を使用します。"
+
+
+def _initial_prompt(language: str | None) -> str | None:
+    lang = (language or "").lower()
+    if lang in {"zh", "yue"}:
+        return _PROMPT_CJK
+    if lang == "ja":
+        return _PROMPT_JA
+    return None

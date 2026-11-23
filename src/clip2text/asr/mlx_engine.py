@@ -78,6 +78,13 @@ class MLXWhisperEngine(BaseEngine):
                 path_or_hf_repo=self.model_name,
                 language=language,
                 word_timestamps=False,
+                # 中文标点示范。不给提示词时 whisper 会输出
+                # "- 我是森森" 这种带破折号前缀、且整段没有标点的文本。
+                # 实测（真实 60 秒中文播客）：
+                #   无 prompt     -> '- 我是森森'
+                #   有 prompt     -> '我是森森，我是蓝白，我是石天，'
+                # condition_on_previous_text=False 对这个现象无效，已试过。
+                initial_prompt=_initial_prompt(language),
             )
         except Exception as exc:  # noqa: BLE001
             raise ASRError(f"mlx-whisper 转写失败: {exc}") from exc
@@ -98,3 +105,17 @@ class MLXWhisperEngine(BaseEngine):
 
 def _is_cjk(lang: str | None) -> bool:
     return (lang or "").lower() in {"zh", "ja", "ko", "yue"}
+
+# 中文/日文场景给一段带标点的示范，能显著改善输出质量。
+# 英文等拉丁语系 whisper 本身标点就正常，不需要额外提示。
+_PROMPT_CJK = "以下是普通话播客的转写，使用标准中文标点：，。？！"
+_PROMPT_JA = "以下は日本語のポッドキャストの文字起こしです。句読点を使用します。"
+
+
+def _initial_prompt(language: str | None) -> str | None:
+    lang = (language or "").lower()
+    if lang in {"zh", "yue"}:
+        return _PROMPT_CJK
+    if lang == "ja":
+        return _PROMPT_JA
+    return None

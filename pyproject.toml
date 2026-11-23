@@ -1,12 +1,12 @@
 [project]
 name = "clip2text"
 version = "0.1.0"
-description = "本地优先的音视频文案提取工具：上传文件、转写、导出，默认零 API key"
+description = "把视频/音频链接或本地文件转成文字：播客、知识科普、讲座，本地优先、默认零 API key"
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
 license = { text = "Apache-2.0" }
 authors = [{ name = "clip2text contributors" }]
-keywords = ["asr", "transcription", "whisper", "ocr", "subtitle", "local-first"]
+keywords = ["asr", "transcription", "whisper", "ocr", "subtitle", "local-first", "podcast", "video-to-text"]
 
 dependencies = [
   "fastapi>=0.115",
@@ -19,6 +19,10 @@ dependencies = [
   "openpyxl>=3.1",
   "static-ffmpeg>=3.0",
   "Pillow>=10.0",
+  # 链接解析是主入口，不是可选能力：核心工具之一装不上 yt-dlp 就少了
+  # YouTube / 抖音 / 小红书 / 喜马拉雅 / TED 等一大半平台。
+  # 它自身纯 Python、无二进制依赖，放核心依赖没有额外安装成本。
+  "yt-dlp>=2025.1.1",
 ]
 
 [project.optional-dependencies]
@@ -30,8 +34,6 @@ mlx = ["mlx-whisper>=0.4.3"]
 funasr = ["funasr>=1.4"]
 # 本地 OCR
 ocr = ["rapidocr-onnxruntime>=1.4"]
-# 平台链接解析（默认关闭，见 README 合规说明）
-extract = ["yt-dlp>=2025.1.1"]
 dev = ["pytest>=8.3", "pytest-asyncio>=0.24", "ruff>=0.7"]
 
 [project.scripts]

@@ -1,10 +1,12 @@
 """yt-dlp 适配器 —— 覆盖绝大多数平台的主力实现。
 
-yt-dlp 已原生支持（截至 2025 年）：
-    小红书 XiaoHongShu · 抖音 Douyin · B 站全系 · 微博 Weibo
-    TikTok · YouTube · 今日头条 · 西瓜 Ixigua · AcFun
+yt-dlp 已原生支持（实测 yt-dlp 2026.10，1754 个 extractor）：
+    YouTube · B 站全系 · 抖音 Douyin · 小红书 XiaoHongShu · 微博 Weibo
+    TikTok · 喜马拉雅 Ximalaya（含 Album）· 网易云音乐/播客 NetEaseMusicProgram
+    网易云 DJ 电台 · QQ 音乐 · TED（TedTalk）· Vimeo · Twitch
+    播客托管商：acast · Libsyn · 以及 21 个 *Podcast 类 extractor
 
-不支持（需自研插件）：快手、视频号、拼多多视频。
+不支持：快手、微信视频号（yt-dlp 里没有对应 extractor，实测 0 命中）。
 
 为什么不自己写这些平台的解析：
     它们的接口签名（X-s / a_bogus）几天一变，写进主仓库等于给自己
@@ -43,7 +45,9 @@ class YtDlpExtractor:
     def unavailable_reason(self) -> str | None:
         if self.available():
             return None
-        return "未安装 yt-dlp。运行 `pip install 'clip2text[extract]'` 后再试。"
+        # yt-dlp 已经是核心依赖，正常安装不会有这个问题；
+        # 提示里带上安装方式是因为有人会用 --no-deps 之类的方式装。
+        return "未安装 yt-dlp。运行 `pip install yt-dlp`（或重装 clip2text）后再试。"
 
     def matches(self, url: str) -> bool:
         return self.available()
@@ -59,6 +63,10 @@ class YtDlpExtractor:
             "outtmpl": str(ctx.work_dir / "source.%(ext)s"),
             "quiet": True,
             "no_warnings": True,
+            # noplaylist=True：合集/多 P 只处理第一条。
+            # 这不是"够用就行"，而是这个产品的定位——一条链接出一份文字。
+            # 多 P 的情况由内置适配器（B 站）给出明确的清单提示，
+            # 免得用户以为整场讲座都转完了。
             "noplaylist": True,
             # 只要单文件流：合并需要 ffmpeg，且音频足够做转写
             "format": "bestaudio/best",
@@ -71,8 +79,17 @@ class YtDlpExtractor:
 
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                # 元信息先到手再决定要不要真下：两小时的 4K 讲座直接开下
+                # 可能白下几个 GB，超出上限还白等。
+                ctx.check_duration(_as_float(info.get("duration")), site="该平台")
+                ctx.check_content_length(
+                    _approx_size(info, ctx.max_bytes), site="该平台"
+                )
                 info = ydl.extract_info(url, download=True)
                 prepared = ydl.prepare_filename(info)
+        except ExtractError:
+            raise
         except Exception as exc:  # noqa: BLE001 - yt-dlp 异常类型非常多
             raise ExtractError(self._humanize(exc)) from exc
 
@@ -87,7 +104,7 @@ class YtDlpExtractor:
             platform=str(info.get("extractor_key") or "unknown").lower(),
             work_type="image" if _looks_like_image(local) else "video",
             title=info.get("title"),
-            content=info.get("description"),
+            content=self._compose_content(info),
             cover=info.get("thumbnail"),
             duration=_as_float(info.get("duration")),
             video_urls=_pick_urls(info),
@@ -98,6 +115,20 @@ class YtDlpExtractor:
                 if k in info
             },
         )
+
+    @staticmethod
+    def _compose_content(info: dict) -> str | None:
+        """简介 + 合集提示。
+
+        yt-dlp 配了 noplaylist=True，遇到合集只处理第一条。这件事必须
+        写在结果里，否则用户会以为整个合集都转完了。
+        """
+        desc = (info.get("description") or "").strip() or None
+        n_entries = info.get("n_entries")
+        if isinstance(n_entries, int) and n_entries > 1:
+            hint = f"⚠️ 这个链接是一个合集（共 {n_entries} 条），本次只处理了第 1 条。"
+            return f"{hint}\n\n{desc}" if desc else hint
+        return desc
 
     @staticmethod
     def _humanize(exc: Exception) -> str:
@@ -118,6 +149,18 @@ class YtDlpExtractor:
         if "georestricted" in low or "geo" in low:
             return "该内容有地区限制，需要配置相应地区的代理。"
         return f"解析失败：{text.splitlines()[0][:300]}"
+
+
+def _approx_size(info: dict, max_bytes: int | None) -> str | None:
+    """把 yt-dlp 元信息里的预估体积转成 Content-Length 的样子。
+
+    filesize 常在下载前未知，filesize_approx 更常可用；两个都没有就返回
+    None（check_content_length 拿到 None 会放行，由下载循环兜底）。
+    """
+    if not max_bytes:
+        return None
+    size = info.get("filesize") or info.get("filesize_approx")
+    return str(size) if isinstance(size, int) and size > 0 else None
 
 
 def _as_float(value: object) -> float | None:

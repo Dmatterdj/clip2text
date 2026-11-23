@@ -23,7 +23,7 @@ from .. import __version__
 from ..asr import engine_statuses
 from ..config import Settings
 from ..exporters import MEDIA_TYPES, SUPPORTED, export, safe_filename
-from ..extractors import platform_summary
+from ..extractors import platform_catalog, platform_summary
 from ..llm import style_list
 from ..media import get_resolve_error, resolve_ffmpeg
 from ..models import Task, TaskStatus
@@ -73,9 +73,14 @@ def capabilities() -> dict[str, object]:
         "extractors": {
             "enabled": settings.extractors_enabled,
             "platforms": platform_summary() if settings.extractors_enabled else [],
+            # 产品视角的「用户能贴哪些链接」清单：每项带 name / label /
+            # domains / available / via / kind。前端直接拿来渲染平台标签。
+            # platform_summary() 是实现视角（哪个适配器在工作），两者不冲突：
+            # 前者回答「用户能贴什么」，后者回答「解析器是否就绪」。
+            "catalog": platform_catalog() if settings.extractors_enabled else [],
             "reason": None
             if settings.extractors_enabled
-            else "默认关闭（设置 EXTRACTORS_ENABLED=true 开启）",
+            else "已被显式关闭（EXTRACTORS_ENABLED=false），设回 true 即可恢复",
         },
         "rewrite": {
             "available": st.llm.configured,
@@ -87,6 +92,11 @@ def capabilities() -> dict[str, object]:
             "max_batch_size": settings.max_batch_size,
             "max_concurrency": settings.max_concurrency,
             "chunk_max_sec": settings.chunk_max_sec,
+            # 长内容护栏：0 表示不限制（前端可以据此决定要不要提示用户）
+            "max_media_duration_min": settings.max_media_duration_min,
+            "max_media_size_mb": settings.max_media_size_mb,
+            "chunk_retry_max": settings.chunk_retry_max,
+            "resume_enabled": settings.resume_enabled,
         },
     }
 
@@ -167,8 +177,8 @@ def _task_or_404(task_id: str) -> Task:
 @router.post("/tasks", summary="创建任务", status_code=201)
 async def create_task(payload: dict[str, object]) -> dict[str, object]:
     """两种来源：
+    · url：   source_value 传作品链接（默认开启，可用 EXTRACTORS_ENABLED=false 关闭）
     · upload：source_value 传 /uploads 返回的 path
-    · url：   source_value 传作品链接（需 EXTRACTORS_ENABLED=true）
 
     必须是 async def：同步 def 会被 FastAPI 丢进线程池，
     而线程池里没有事件循环，无法调度后台任务。
@@ -176,7 +186,7 @@ async def create_task(payload: dict[str, object]) -> dict[str, object]:
     st = get_state()
     settings = st.settings
 
-    source_type = str(payload.get("source_type") or "upload").lower()
+    source_type = str(payload.get("source_type") or "url").lower()
     if source_type not in {"upload", "url"}:
         raise HTTPException(400, "source_type 只能是 upload 或 url")
 
@@ -187,8 +197,8 @@ async def create_task(payload: dict[str, object]) -> dict[str, object]:
     if source_type == "url" and not settings.extractors_enabled:
         raise HTTPException(
             400,
-            "链接解析默认关闭。设置 EXTRACTORS_ENABLED=true 后重启服务，"
-            "并确认仅用于处理你拥有版权的内容。",
+            "链接解析已被显式关闭（EXTRACTORS_ENABLED=false）。"
+            "设回 true 后重启服务即可恢复，并确认仅用于处理你拥有版权的内容。",
         )
 
     if source_type == "upload":

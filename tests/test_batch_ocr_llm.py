@@ -365,3 +365,36 @@ async def test_stream_rewrite_rejects_empty_text():
     with pytest.raises(LLMError, match="没有可改写的内容"):
         async for _ in stream_rewrite("   ", cfg):
             pass
+
+
+# ================================================================ 标点提示词
+@pytest.mark.parametrize("engine_mod", ["mlx_engine", "faster_whisper_engine"])
+def test_cjk_initial_prompt_present(engine_mod):
+    """中文场景必须给标点示范。
+
+    实测：不给 prompt 时 whisper 输出 "- 我是森森" 这种带破折号前缀、
+    整段无标点的文本；给了之后破折号消失、标点出现。
+    """
+    import importlib
+
+    mod = importlib.import_module(f"clip2text.asr.{engine_mod}")
+    assert mod._initial_prompt("zh") is not None
+    assert "标点" in mod._initial_prompt("zh")
+
+
+@pytest.mark.parametrize("engine_mod", ["mlx_engine", "faster_whisper_engine"])
+def test_latin_language_needs_no_prompt(engine_mod):
+    """英文等拉丁语系 whisper 本身标点就正常，不该强加中文提示词。"""
+    import importlib
+
+    mod = importlib.import_module(f"clip2text.asr.{engine_mod}")
+    assert mod._initial_prompt("en") is None
+    assert mod._initial_prompt(None) is None
+
+
+def test_japanese_prompt_is_japanese():
+    from clip2text.asr.mlx_engine import _initial_prompt
+
+    p = _initial_prompt("ja")
+    assert p is not None
+    assert "日本語" in p

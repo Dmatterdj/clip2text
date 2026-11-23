@@ -1,174 +1,335 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="dark">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>clip2text · 本地文案提取</title>
-  <link rel="stylesheet" href="./style.css">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="dark light">
+<meta name="description" content="clip2text：把视频/播客链接转成带时间戳的文字，全程本机处理。">
+<title>clip2text · 链接转文字</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2032%2032%22%3E%3Crect%20width%3D%2232%22%20height%3D%2232%22%20rx%3D%229%22%20fill%3D%22%2322c55e%22%2F%3E%3Cpath%20d%3D%22M9%2013v6M13.5%2010v12M18%2011.5v9M22.5%2014v4%22%20stroke%3D%22%23052e16%22%20stroke-width%3D%222.6%22%20stroke-linecap%3D%22round%22%20fill%3D%22none%22%2F%3E%3C%2Fsvg%3E">
+<link rel="stylesheet" href="./style.css">
+<script>
+  /* 主题必须在首帧前定好，否则会闪一下白屏。
+     没有显式选择时跟随系统。 */
+  (function () {
+    var t;
+    try { t = localStorage.getItem('c2t.theme'); } catch (e) { t = null; }
+    if (t !== 'dark' && t !== 'light') {
+      t = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+    }
+    document.documentElement.dataset.theme = t;
+  })();
+</script>
 </head>
 <body>
+
+<!-- 图标精灵：全部内联，断网也能用 -->
+<svg class="sprite" width="0" height="0" aria-hidden="true" focusable="false">
+  <defs>
+    <symbol id="i-link" viewBox="0 0 24 24"><path d="M9.5 14.5l5-5"/><path d="M12.2 7.4l1.6-1.6a3.6 3.6 0 0 1 5.1 5.1l-1.6 1.6"/><path d="M11.8 16.6l-1.6 1.6a3.6 3.6 0 0 1-5.1-5.1l1.6-1.6"/></symbol>
+    <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 16.5V4.5"/><path d="M7.5 9L12 4.5 16.5 9"/><path d="M4.5 15v3.2A1.8 1.8 0 0 0 6.3 20h11.4a1.8 1.8 0 0 0 1.8-1.8V15"/></symbol>
+    <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M4.5 12h14"/><path d="M13 6.5L18.5 12 13 17.5"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.4"/><path d="M15.8 15.8L20 20"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8.5" y="8.5" width="11.5" height="11.5" rx="2.4"/><path d="M15.5 5.6A2.2 2.2 0 0 0 13.4 4H6.4A2.4 2.4 0 0 0 4 6.4v7a2.2 2.2 0 0 0 1.6 2.1"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v10"/><path d="M7.5 9.5L12 14l4.5-4.5"/><path d="M4.5 17v1.2A1.8 1.8 0 0 0 6.3 20h11.4a1.8 1.8 0 0 0 1.8-1.8V17"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="M6.2 6.2l11.6 11.6"/><path d="M17.8 6.2L6.2 17.8"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.6l4.4 4.4L19 6.8"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="7.8"/><path d="M12 7.6V12l3.1 2"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4.5 7h15"/><path d="M9.6 7V5.6A1.4 1.4 0 0 1 11 4.2h2a1.4 1.4 0 0 1 1.4 1.4V7"/><path d="M6.6 7l.7 11.3a1.9 1.9 0 0 0 1.9 1.7h5.6a1.9 1.9 0 0 0 1.9-1.7L17.4 7"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M19 12a7 7 0 1 1-2.3-5.2"/><path d="M19.6 4.6v4.2h-4.2"/></symbol>
+    <symbol id="i-file" viewBox="0 0 24 24"><path d="M13.6 4H7.5A1.5 1.5 0 0 0 6 5.5v13A1.5 1.5 0 0 0 7.5 20h9a1.5 1.5 0 0 0 1.5-1.5V8.4z"/><path d="M13.6 4v4.4H18"/></symbol>
+    <symbol id="i-spark" viewBox="0 0 24 24"><path d="M11.5 3.6l1.7 4.6 4.5 1.7-4.5 1.7-1.7 4.6-1.7-4.6L5.3 9.9l4.5-1.7z"/><path d="M17.8 15.4l.8 2.1 2 .8-2 .8-.8 2.1-.8-2.1-2-.8 2-.8z"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 14.6A8.2 8.2 0 0 1 9.4 4a8.2 8.2 0 1 0 10.6 10.6z"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.1"/><path d="M12 3.2v2.1M12 18.7v2.1M3.2 12h2.1M18.7 12h2.1M5.5 5.5l1.5 1.5M17 17l1.5 1.5M18.5 5.5L17 7M7 17l-1.5 1.5"/></symbol>
+    <symbol id="i-cmd" viewBox="0 0 24 24"><path d="M9.2 9.2h5.6v5.6H9.2z"/><path d="M9.2 9.2V7.3a1.9 1.9 0 1 0-1.9 1.9h1.9zM14.8 9.2V7.3a1.9 1.9 0 1 1 1.9 1.9h-1.9zM9.2 14.8v1.9a1.9 1.9 0 1 1-1.9-1.9h1.9zM14.8 14.8v1.9a1.9 1.9 0 1 0 1.9-1.9h-1.9z"/></symbol>
+    <symbol id="i-chevron" viewBox="0 0 24 24"><path d="M6.5 9.5l5.5 5.5 5.5-5.5"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 7.8v4.6"/><path d="M12 16h.01"/></symbol>
+    <symbol id="i-list" viewBox="0 0 24 24"><path d="M9 6.8h11M9 12h11M9 17.2h11"/><path d="M4.6 6.8h.01M4.6 12h.01M4.6 17.2h.01"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="M9.2 6.6l8.6 5.4-8.6 5.4z"/></symbol>
+  </defs>
+</svg>
+
+<div class="shell">
+
+  <!-- ================= 顶栏 ================= -->
   <header class="topbar">
-    <div class="brand">
-      <span class="logo">c2t</span>
-      <div>
-        <h1>clip2text</h1>
-        <p class="tagline">本地转写 · 不上传第三方 · 默认零 API key</p>
-      </div>
-    </div>
-    <div class="caps" id="caps" title="本机能力">
-      <span class="caps-loading">检测能力中…</span>
+    <a class="brand" href="./" aria-label="clip2text 首页">
+      <span class="mark" aria-hidden="true">
+        <svg viewBox="0 0 28 28">
+          <rect x="1.5" y="1.5" width="25" height="25" rx="8" class="mark-bg"/>
+          <path d="M8.6 11v6M11.9 8.8v10.4M15.2 10.2v7.6M18.5 12.4v3.2" class="mark-bars"/>
+        </svg>
+      </span>
+      <span class="brand-text">
+        <span class="brand-name">clip2text</span>
+        <span class="brand-sub">链接 → 文字</span>
+      </span>
+    </a>
+
+    <div class="topbar-actions">
+      <div class="caps" id="caps" title="本机能力"><span class="caps-ghost">检测能力…</span></div>
+      <button class="iconbtn" id="themeBtn" type="button" title="切换深浅色" aria-label="切换深浅色">
+        <svg class="ico" aria-hidden="true"><use href="#i-moon"></use></svg>
+      </button>
+      <button class="cmdk" id="paletteBtn" type="button" title="命令面板（⌘K）">
+        <svg class="ico" aria-hidden="true"><use href="#i-cmd"></use></svg><kbd>K</kbd>
+      </button>
     </div>
   </header>
 
-  <main>
-    <!-- 模式切换 -->
-    <div class="mode-switch" role="tablist">
-      <button class="mode active" data-mode="single" role="tab" aria-selected="true">
-        单个文件
-      </button>
-      <button class="mode" data-mode="batch" role="tab" aria-selected="false">
-        批量链接
-      </button>
-    </div>
+  <main class="main">
 
-    <!-- ==================== 单文件模式 ==================== -->
-    <div id="mode-single">
-      <section class="card">
-        <h2>1 · 选择文件</h2>
-        <div class="dropzone" id="dropzone" tabindex="0" role="button"
-             aria-label="点击或拖拽文件到此处上传">
-          <input type="file" id="fileInput" hidden
-                 accept=".mp4,.mov,.mkv,.avi,.webm,.flv,.wmv,.m4v,.ts,.3gp,.mp3,.wav,.m4a,.aac,.flac,.ogg,.opus,.wma,.amr,.aiff,.jpg,.jpeg,.png,.webp,.bmp">
-          <div class="dz-inner">
-            <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                 stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-              <polyline points="7 10 12 5 17 10"/><line x1="12" y1="5" x2="12" y2="16"/>
-            </svg>
-            <strong>点击选择</strong> 或把文件拖到这里
-            <span class="hint" id="limitHint">音视频或图片</span>
-          </div>
-        </div>
-        <div class="file-row" id="fileRow" hidden>
-          <span class="file-name" id="fileName"></span>
-          <span class="file-size" id="fileSize"></span>
-          <button class="btn ghost" id="clearFile" type="button">更换</button>
-        </div>
-        <div class="progress" id="uploadProgress" hidden>
-          <div class="bar"><i id="uploadBar"></i></div>
-          <span id="uploadPct">0%</span>
-        </div>
-      </section>
-
-      <section class="card">
-        <h2>2 · 开始提取</h2>
-        <div class="actions">
-          <button class="btn primary" id="startBtn" type="button" disabled>开始转写</button>
-          <button class="btn ghost" id="cancelBtn" type="button" hidden>取消</button>
-          <span class="status-text" id="statusText"></span>
-        </div>
-        <p class="disclaimer">文件只在本机处理，不会上传到任何第三方服务。</p>
-      </section>
-
-      <section class="card" id="resultCard" hidden>
-        <h2>3 · 结果</h2>
-        <div class="result-meta" id="resultMeta"></div>
-
-        <div class="tabs" role="tablist">
-          <button class="tab active" data-tab="text" role="tab" aria-selected="true">正文</button>
-          <button class="tab" data-tab="segments" role="tab" aria-selected="false">分句</button>
-          <button class="tab" data-tab="rewrite" role="tab" aria-selected="false" id="rewriteTab" hidden>改写</button>
-        </div>
-
-        <div class="tab-panel" id="panel-text">
-          <textarea id="resultText" readonly rows="12" spellcheck="false"></textarea>
-          <div class="row-actions">
-            <button class="btn ghost" id="copyText" type="button">复制全文</button>
-            <span class="copy-hint" id="copyHint"></span>
-          </div>
-        </div>
-
-        <div class="tab-panel" id="panel-segments" hidden>
-          <div class="segments" id="segments"></div>
-        </div>
-
-        <div class="tab-panel" id="panel-rewrite" hidden>
-          <div class="rewrite-controls">
-            <select id="styleSelect" class="select"></select>
-            <button class="btn primary small" id="doRewrite" type="button">开始改写</button>
-            <span class="status-text" id="rewriteStatus"></span>
-          </div>
-          <textarea id="rewriteOutput" readonly rows="10" spellcheck="false"
-                    placeholder="改写结果会显示在这里"></textarea>
-          <div class="row-actions">
-            <button class="btn ghost" id="copyRewrite" type="button">复制改写结果</button>
-            <span class="copy-hint" id="rewriteHint"></span>
-          </div>
-        </div>
-
-        <div class="export-row">
-          <span>导出：</span>
-          <button class="btn chip" data-format="txt" type="button">TXT</button>
-          <button class="btn chip" data-format="markdown" type="button">Markdown</button>
-          <button class="btn chip" data-format="docx" type="button">Word</button>
-          <button class="btn chip" data-format="xlsx" type="button">Excel</button>
-        </div>
-      </section>
-    </div>
-
-    <!-- ==================== 批量模式 ==================== -->
-    <div id="mode-batch" hidden>
-      <section class="card">
-        <h2>批量提交链接</h2>
-        <p class="disclaimer" id="batchHint">
-          每行一条作品链接，单次最多 <b id="batchLimit">100</b> 条。
-          重复链接会自动去重。
+    <!-- ================= 第一屏：粘贴链接 ================= -->
+    <section class="hero">
+      <div class="hero-head">
+        <h1>把链接变成<em>可编辑的文字</em></h1>
+        <p class="lede">
+          两小时的中文播客、B 站或 YouTube 的知识长视频、讲座与读书内容，
+          粘进来就能拿到带时间戳的文字。全程在本机处理，不经过第三方服务。
         </p>
-        <div class="warn-box" id="extractWarn" hidden>
-          链接解析当前处于关闭状态。请在 <code>.env</code> 里设置
-          <code>EXTRACTORS_ENABLED=true</code> 后重启服务。
-          <br><br>
-          开启后请仅用于处理你拥有版权的内容。详见 README 的合规说明。
-        </div>
-        <textarea id="batchInput" rows="8" spellcheck="false"
-                  placeholder="https://www.bilibili.com/video/BV1xx411c7mD&#10;https://v.douyin.com/xxxxx&#10;https://www.xiaohongshu.com/explore/xxxxx"></textarea>
-        <div class="actions" style="margin-top:12px">
-          <button class="btn primary" id="batchStart" type="button">开始批量提取</button>
-          <button class="btn ghost" id="batchCancel" type="button" hidden>取消</button>
-          <span class="status-text" id="batchStatus"></span>
-        </div>
-        <div class="progress" id="batchProgress" hidden>
-          <div class="bar"><i id="batchBar"></i></div>
-          <span id="batchPct">0%</span>
-        </div>
-      </section>
-
-      <section class="card" id="batchResultCard" hidden>
-        <div class="card-head">
-          <h2>批量结果</h2>
-          <span class="status-text" id="batchSummary"></span>
-        </div>
-        <div class="batch-list" id="batchList"></div>
-        <div class="export-row">
-          <span>合并导出全部成功项：</span>
-          <button class="btn chip" data-batch-export="txt" type="button">TXT</button>
-          <button class="btn chip" data-batch-export="markdown" type="button">Markdown</button>
-        </div>
-      </section>
-    </div>
-
-    <!-- ==================== 历史 ==================== -->
-    <section class="card">
-      <div class="card-head">
-        <h2>历史记录</h2>
-        <button class="btn ghost small" id="refreshHistory" type="button">刷新</button>
       </div>
-      <div id="history" class="history"></div>
+
+      <div class="modes" role="tablist" aria-label="输入方式">
+        <button class="mode on" data-mode="single" role="tab" aria-selected="true">单条链接</button>
+        <button class="mode" data-mode="batch" role="tab" aria-selected="false">批量链接</button>
+      </div>
+
+      <div class="composer" id="composer">
+        <label class="sr-only" for="urlInput">视频或播客链接</label>
+        <textarea id="urlInput" class="composer-input" rows="2" spellcheck="false"
+          placeholder="粘贴一条视频 / 播客链接…"></textarea>
+        <div class="composer-foot">
+          <div class="composer-tools">
+            <button class="btn btn-quiet btn-sm" id="pickFileBtn" type="button">
+              <svg class="ico" aria-hidden="true"><use href="#i-upload"></use></svg>上传本地文件
+            </button>
+            <input type="file" id="fileInput" hidden
+              accept=".mp4,.mov,.mkv,.avi,.webm,.flv,.wmv,.m4v,.ts,.3gp,.mp3,.wav,.m4a,.aac,.flac,.ogg,.opus,.wma,.amr,.aiff,.jpg,.jpeg,.png,.webp,.bmp">
+            <span class="hint" id="composerHint">⌘ / Ctrl + Enter 开始</span>
+          </div>
+          <div class="composer-cta">
+            <button class="btn btn-primary" id="startBtn" type="button">
+              开始提取<svg class="ico" aria-hidden="true"><use href="#i-arrow"></use></svg>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div class="file-chip" id="fileChip" hidden>
+        <svg class="ico" aria-hidden="true"><use href="#i-file"></use></svg>
+        <span class="fc-name" id="fileName"></span>
+        <span class="fc-size" id="fileSize"></span>
+        <span class="fc-bar" aria-hidden="true"><i id="uploadBar"></i></span>
+        <span class="fc-pct" id="uploadPct"></span>
+        <button class="iconbtn iconbtn-sm" id="clearFile" type="button" title="移除文件" aria-label="移除文件">
+          <svg class="ico" aria-hidden="true"><use href="#i-x"></use></svg>
+        </button>
+      </div>
+
+      <div class="batch-box" id="batchBox" hidden>
+        <label class="sr-only" for="batchInput">批量链接，每行一条</label>
+        <textarea id="batchInput" class="composer-input mono" rows="6" spellcheck="false"
+          placeholder="每行粘贴一条链接…"></textarea>
+        <div class="composer-foot">
+          <div class="composer-tools">
+            <span class="hint" id="batchHint">每行一条链接，重复的自动去掉</span>
+          </div>
+          <button class="btn btn-primary" id="batchStart" type="button">
+            开始批量提取<svg class="ico" aria-hidden="true"><use href="#i-arrow"></use></svg>
+          </button>
+        </div>
+      </div>
+
+      <div class="notice-list" id="extractNotice" hidden></div>
+
+      <div class="platforms" id="platformRow"></div>
     </section>
+
+    <!-- ================= 进行中的任务 ================= -->
+    <section class="panel task" id="taskPanel" hidden aria-live="polite">
+      <div class="task-head">
+        <div class="task-title">
+          <span class="live-dot" id="taskDot" aria-hidden="true"></span>
+          <span id="taskStageLabel">准备中…</span>
+          <span class="task-pct" id="taskPct">0%</span>
+        </div>
+        <div class="task-head-actions">
+          <span class="task-elapsed" id="taskElapsed" title="已运行时间">00:00</span>
+          <button class="btn btn-quiet btn-sm" id="cancelBtn" type="button">取消</button>
+        </div>
+      </div>
+      <div class="progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="taskProgress">
+        <i id="taskBar"></i>
+      </div>
+      <ol class="stepper" id="stepper"></ol>
+      <p class="task-detail" id="taskDetail"></p>
+    </section>
+
+    <!-- ================= 结果 ================= -->
+    <section class="panel result" id="resultPanel" hidden>
+      <div class="result-head">
+        <div class="rh-main">
+          <h2 id="resultTitle">－</h2>
+          <div class="meta" id="resultMeta"></div>
+        </div>
+        <div class="rh-actions">
+          <button class="btn btn-quiet btn-sm" id="copyText" type="button">
+            <svg class="ico" aria-hidden="true"><use href="#i-copy"></use></svg>复制全文
+          </button>
+          <div class="export" role="group" aria-label="导出">
+            <span class="export-label"><svg class="ico" aria-hidden="true"><use href="#i-download"></use></svg>导出</span>
+            <button class="btn btn-quiet btn-sm" data-format="txt" type="button">TXT</button>
+            <button class="btn btn-quiet btn-sm" data-format="markdown" type="button">MD</button>
+            <button class="btn btn-quiet btn-sm" data-format="docx" type="button">Word</button>
+            <button class="btn btn-quiet btn-sm" data-format="xlsx" type="button">Excel</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="toolbar">
+        <div class="tabs" role="tablist" aria-label="结果视图">
+          <button class="tab on" data-tab="text" role="tab" aria-selected="true">正文</button>
+          <button class="tab" data-tab="segments" role="tab" aria-selected="false">
+            分句<span class="tab-count" id="segCount"></span>
+          </button>
+          <button class="tab" data-tab="rewrite" role="tab" aria-selected="false" id="rewriteTab" hidden>
+            <svg class="ico" aria-hidden="true"><use href="#i-spark"></use></svg>改写
+          </button>
+        </div>
+        <div class="search" id="searchBox">
+          <svg class="ico" aria-hidden="true"><use href="#i-search"></use></svg>
+          <input id="searchInput" type="text" placeholder="在结果中查找" autocomplete="off" spellcheck="false" aria-label="在结果中查找">
+          <span class="search-count" id="searchCount"></span>
+          <button class="iconbtn iconbtn-sm" id="searchPrev" type="button" title="上一处" aria-label="上一处">↑</button>
+          <button class="iconbtn iconbtn-sm" id="searchNext" type="button" title="下一处" aria-label="下一处">↓</button>
+        </div>
+      </div>
+
+      <div class="panel-body" id="panelText" role="tabpanel" aria-label="正文">
+        <article class="doc" id="docText"></article>
+      </div>
+
+      <div class="panel-body" id="panelSegments" role="tabpanel" aria-label="分句" hidden>
+        <div class="seg-toolbar">
+          <span class="seg-status" id="segStatus">－</span>
+          <div class="seg-actions">
+            <button class="btn btn-quiet btn-sm" id="copySelectedSegs" type="button" disabled>复制选中</button>
+            <button class="btn btn-quiet btn-sm" id="copyAllSegs" type="button">复制带时间戳</button>
+            <span class="hint" id="segCopyHint"></span>
+          </div>
+        </div>
+        <div class="seg-list" id="segList" tabindex="0" role="region" aria-label="分句列表"></div>
+        <div class="seg-sentinel" id="segSentinel" hidden></div>
+      </div>
+
+      <div class="panel-body" id="panelRewrite" role="tabpanel" aria-label="改写" hidden>
+        <div class="rewrite-bar">
+          <div class="field">
+            <label for="styleSelect">改写风格</label>
+            <div class="select-wrap">
+              <select id="styleSelect" class="select"></select>
+              <svg class="ico select-ico" aria-hidden="true"><use href="#i-chevron"></use></svg>
+            </div>
+          </div>
+          <div class="field grow">
+            <label for="rewriteInstruction">额外要求（可选）</label>
+            <input id="rewriteInstruction" class="input" type="text" placeholder="例如：保留专有名词，输出 5 条要点" autocomplete="off">
+          </div>
+          <button class="btn btn-primary" id="doRewrite" type="button">
+            <svg class="ico" aria-hidden="true"><use href="#i-spark"></use></svg>开始改写
+          </button>
+        </div>
+        <div class="rewrite-out">
+          <div class="ro-head">
+            <span class="ro-title">改写结果</span>
+            <span class="hint" id="rewriteStatus"></span>
+            <span class="ro-spacer"></span>
+            <span class="hint" id="rewriteCount"></span>
+            <button class="btn btn-quiet btn-sm" id="copyRewrite" type="button">
+              <svg class="ico" aria-hidden="true"><use href="#i-copy"></use></svg>复制
+            </button>
+          </div>
+          <article class="doc" id="rewriteOutput" aria-live="polite"></article>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= 批量进度 ================= -->
+    <section class="panel" id="batchPanel" hidden>
+      <div class="panel-head">
+        <h2>批量进度</h2>
+        <div class="panel-head-actions">
+          <span class="hint" id="batchSummary"></span>
+          <button class="btn btn-quiet btn-sm" id="batchCancel" type="button">取消</button>
+        </div>
+      </div>
+      <div class="progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="batchProgress">
+        <i id="batchBar"></i>
+      </div>
+      <div class="batch-list" id="batchList" role="region" aria-label="批量条目"></div>
+      <div class="batch-foot">
+        <span class="hint">合并导出成功的条目</span>
+        <button class="btn btn-quiet btn-sm" data-batch-export="txt" type="button">TXT</button>
+        <button class="btn btn-quiet btn-sm" data-batch-export="markdown" type="button">Markdown</button>
+      </div>
+    </section>
+
+    <!-- ================= 历史 ================= -->
+    <section class="panel history">
+      <div class="panel-head">
+        <h2>历史记录<span class="head-count" id="histCount"></span></h2>
+        <div class="hist-filters" id="histFilters" role="group" aria-label="状态筛选">
+          <button class="chip on" data-status="" type="button">全部</button>
+          <button class="chip" data-status="SUCCESS" type="button">完成</button>
+          <button class="chip" data-status="RUNNING" type="button">进行中</button>
+          <button class="chip" data-status="FAILED" type="button">失败</button>
+        </div>
+        <div class="search sm">
+          <svg class="ico" aria-hidden="true"><use href="#i-search"></use></svg>
+          <input id="histSearch" type="text" placeholder="搜索标题或内容" autocomplete="off" aria-label="搜索历史">
+        </div>
+        <button class="iconbtn" id="refreshHistory" type="button" title="刷新" aria-label="刷新历史">
+          <svg class="ico" aria-hidden="true"><use href="#i-refresh"></use></svg>
+        </button>
+      </div>
+      <div class="hist-list" id="history"></div>
+      <div class="hist-more">
+        <button class="btn btn-quiet btn-sm" id="histMore" type="button" hidden>加载更多</button>
+      </div>
+    </section>
+
   </main>
 
-  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <footer class="foot">
+    <span>本机处理，结果只存在本地 <code>.data/</code></span>
+    <span class="foot-dot" aria-hidden="true">·</span>
+    <span>仅用于处理你拥有版权的内容</span>
+  </footer>
+</div>
 
-  <script src="./app.js"></script>
+<!-- 全屏拖放提示 -->
+<div class="drop-overlay" id="dropOverlay" aria-hidden="true" hidden>
+  <div class="drop-inner">
+    <svg class="ico" aria-hidden="true"><use href="#i-link"></use></svg>
+    <strong>松手即可</strong>
+    <span>链接填进粘贴框，文件进入待提取</span>
+  </div>
+</div>
+
+<!-- 命令面板 -->
+<div class="palette-wrap" id="paletteWrap" hidden>
+  <div class="palette" role="dialog" aria-modal="true" aria-label="命令面板">
+    <div class="palette-input">
+      <svg class="ico" aria-hidden="true"><use href="#i-search"></use></svg>
+      <input id="paletteInput" type="text" placeholder="输入命令…" autocomplete="off" spellcheck="false">
+      <kbd>Esc</kbd>
+    </div>
+    <div class="palette-list" id="paletteList" role="listbox" aria-label="命令"></div>
+  </div>
+</div>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script src="./app.js"></script>
 </body>
 </html>

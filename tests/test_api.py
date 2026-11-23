@@ -81,8 +81,29 @@ def test_capabilities_shape(client):
     for key in ("version", "ffmpeg", "asr", "ocr", "llm", "extractors", "exporters"):
         assert key in data
     assert data["exporters"] == ["txt", "markdown", "docx", "xlsx"]
-    # 默认必须关闭链接解析
-    assert data["extractors"]["enabled"] is False
+    # 链接解析默认必须开启：这个工具的主场景就是「贴链接 → 出文字」
+    assert data["extractors"]["enabled"] is True
+    assert data["extractors"]["reason"] is None
+    # 平台清单要真实可用，前端靠它渲染「支持哪些平台」
+    catalog = data["extractors"]["catalog"]
+    names = {item["name"] for item in catalog}
+    assert {"bilibili", "xiaoyuzhou", "youtube"} <= names
+    for item in catalog:
+        assert set(item) >= {"name", "label", "domains", "available"}
+        assert isinstance(item["domains"], list) and item["domains"]
+    # 内置适配器（B 站 / 小宇宙 / RSS）不依赖 yt-dlp，必须始终可用
+    builtin = {i["name"]: i for i in catalog if i["via"] == "builtin"}
+    assert builtin["bilibili"]["available"] is True
+    assert builtin["xiaoyuzhou"]["available"] is True
+
+
+def test_capabilities_limits_expose_long_content_guards(client):
+    data = client.get("/api/v1/capabilities").json()
+    limits = data["limits"]
+    assert limits["max_media_duration_min"] == 180
+    assert limits["max_media_size_mb"] == 2048
+    assert limits["chunk_retry_max"] == 2
+    assert limits["resume_enabled"] is True
 
 
 def test_unknown_route(client):
@@ -130,13 +151,44 @@ def test_create_task_rejects_outside_uploads(client, tmp_path):
     assert "uploads" in r.json()["detail"]
 
 
-def test_create_task_url_disabled_by_default(client):
+def test_create_task_url_allowed_by_default(client, monkeypatch):
+    """默认配置下贴链接就能建任务 —— 这是产品的主入口。
+
+    不真跑流水线：把 pipeline.start 换成记录器，避免测试里去连真实网络。
+    """
+    started: list[str] = []
+    st = client.state  # type: ignore[attr-defined]
+    monkeypatch.setattr(st.pipeline, "start", started.append)
+
+    r = client.post(
+        "/api/v1/tasks",
+        json={"source_type": "url", "source_value": "https://www.bilibili.com/video/BV1xx411c7mD"},
+    )
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["source_type"] == "url"
+    assert body["status"] == "QUEUED"
+
+
+def test_create_task_url_rejected_when_explicitly_disabled(client, monkeypatch):
+    """合规兜底：显式关掉之后必须拒绝，并在报错里说清楚怎么恢复。"""
+    st = client.state  # type: ignore[attr-defined]
+    monkeypatch.setattr(st.settings, "extractors_enabled", False)
+
     r = client.post(
         "/api/v1/tasks",
         json={"source_type": "url", "source_value": "https://example.com/v/1"},
     )
     assert r.status_code == 400
-    assert "默认关闭" in r.json()["detail"]
+    assert "显式关闭" in r.json()["detail"]
+
+
+def test_capabilities_platforms_empty_when_disabled(client, monkeypatch):
+    st = client.state  # type: ignore[attr-defined]
+    monkeypatch.setattr(st.settings, "extractors_enabled", False)
+    data = client.get("/api/v1/capabilities").json()
+    assert data["extractors"]["catalog"] == []
+    assert "显式关闭" in data["extractors"]["reason"]
 
 
 def test_task_list_and_delete(client):

@@ -50,10 +50,31 @@ class Settings(BaseSettings):
     deepseek_base_url: str = "https://api.deepseek.com"
 
     # ---------- 链接解析 ----------
-    extractors_enabled: bool = False
+    # 默认开启：这个工具的产品定位是「贴链接 → 出文字」（播客、知识科普、
+    # 读书、讲座），上传文件只是并行能力，不该是唯一入口。
+    # 合规兜底仍然保留：显式设 EXTRACTORS_ENABLED=false 可整体关闭。
+    extractors_enabled: bool = True
     extractors_allow: str = ""
     proxy_url: str = ""
     cookie_file: str = ""
+
+    # ---------- 长内容护栏 ----------
+    # 3 小时播客会切成 ~100 段，任何一段卡住都会白烧几十分钟；
+    # 超过阈值直接拒绝，比「跑了 40 分钟后 OOM/被限流」对用户友好。
+    # 设为 0 表示不限制（自建机器上想跑超长内容时用）。
+    max_media_duration_min: int = Field(default=180, ge=0, le=24 * 60)
+    max_media_size_mb: int = Field(default=2048, ge=0)
+
+    # ---------- 分片级重试 ----------
+    # 2 小时播客切成 70 段，中间任一段失败就整任务作废太浪费：
+    # 每段最多重试 chunk_retry_max 次，退避按 1x / 2x / 4x 指数增长。
+    chunk_retry_max: int = Field(default=2, ge=0, le=10)
+    chunk_retry_backoff_sec: float = Field(default=1.0, ge=0.0, le=60.0)
+
+    # ---------- 断点续跑 ----------
+    # 每段转写结果落盘到 work/<task_id>/checkpoint.json，
+    # 进程重启后跳过已完成的分片，而不是从头再跑一遍。
+    resume_enabled: bool = True
 
     @field_validator("ffmpeg_mode")
     @classmethod
@@ -100,6 +121,16 @@ class Settings(BaseSettings):
     @property
     def allowed_extractors(self) -> list[str]:
         return [x.strip() for x in self.extractors_allow.split(",") if x.strip()]
+
+    @property
+    def max_media_duration_sec(self) -> float | None:
+        """长内容时长上限（秒）。返回 None 表示不限制。"""
+        return float(self.max_media_duration_min * 60) if self.max_media_duration_min else None
+
+    @property
+    def max_media_bytes(self) -> int | None:
+        """长内容体积上限（字节）。返回 None 表示不限制。"""
+        return self.max_media_size_mb * 1024 * 1024 if self.max_media_size_mb else None
 
     def ensure_dirs(self) -> None:
         for p in (self.data_dir, self.uploads_dir, self.work_dir, self.exports_dir):
