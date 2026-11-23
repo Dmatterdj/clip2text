@@ -33,6 +33,62 @@ def apply_hf_endpoint() -> str | None:
     return None
 
 
+def enable_offline_if_cached(repo_id: str) -> bool:
+    """模型已完整缓存时切到离线模式——这是一个 25 倍的性能修复。
+
+    实测（M4，29.7s 中文音频，turbo 模型）：
+        联网校验 revision（被墙）  84.5s
+        离线模式                    3.4s
+
+    原因：即便权重已在本地，huggingface_hub 每次仍会访问 hub 校验
+    refs/main 指向的 revision。网络不通时它会做多轮带退避的重试，
+    然后才回落到本地快照——用户看到的就是"第一次转写卡了 80 秒"。
+
+    ⚠️ 调用时机极其重要
+        huggingface_hub 在**模块级**就把 HF_HUB_OFFLINE 读成了常量：
+            HF_HUB_OFFLINE = _is_true(os.environ.get("HF_HUB_OFFLINE"))
+            def is_offline_mode(): return HF_HUB_OFFLINE
+        所以必须在本函数之后再 import huggingface_hub / mlx_whisper /
+        faster_whisper，否则设环境变量不生效（实测仍然 84s）。
+        已经 import 过的情况由 _patch_loaded_constants() 兜底。
+
+    需要强制检查更新时，用户显式设 HF_HUB_OFFLINE=0 即可覆盖。
+    """
+    if os.environ.get("HF_HUB_OFFLINE") == "0":
+        return False  # 用户明确要求联网
+    if snapshot_complete(repo_id):
+        os.environ.setdefault("HF_HUB_OFFLINE", "1")
+        log.debug("模型 %s 已在本地缓存，启用离线模式", repo_id)
+        return True
+    return False
+
+
+def _patch_loaded_constants() -> None:
+    """兜底：如果 huggingface_hub 已经被 import，直接改模块常量。
+
+    只在 enable_offline_if_cached() 返回 True 且 hub 已加载时调用。
+    """
+    import sys
+
+    mod = sys.modules.get("huggingface_hub.constants")
+    if mod is not None:
+        mod.HF_HUB_OFFLINE = True
+    hub = sys.modules.get("huggingface_hub")
+    if hub is not None and hasattr(hub, "constants"):
+        hub.constants.HF_HUB_OFFLINE = True
+
+
+def prepare_offline(repo_id: str) -> bool:
+    """一步到位：检查缓存 → 设环境变量 → 打补丁。
+
+    必须在 import 任何 hf 相关库之前调用。
+    """
+    ok = enable_offline_if_cached(repo_id)
+    if ok:
+        _patch_loaded_constants()
+    return ok
+
+
 def enable_mirror() -> None:
     """显式启用国内镜像（供 CLI --mirror 或环境变量触发）。"""
     os.environ.setdefault("HF_ENDPOINT", DEFAULT_MIRROR)

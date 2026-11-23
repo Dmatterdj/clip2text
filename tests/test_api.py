@@ -6,8 +6,6 @@
 
 from __future__ import annotations
 
-import shutil
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -171,7 +169,6 @@ def test_export_all_formats(client):
     ).json()
 
     # 直接往库里塞结果，跳过真实转写
-    from clip2text.models import Segment
 
     st = client.state  # type: ignore[attr-defined]
     st.db.update_fields(

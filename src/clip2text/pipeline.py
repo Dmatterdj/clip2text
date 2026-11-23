@@ -18,7 +18,7 @@ import uuid
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
-from .asr import ASRError, ASREngine, build_engines, select_engine
+from .asr import ASREngine, ASRError, build_engines, select_engine
 from .config import Settings, get_settings
 from .db import Database
 from .media import FFmpegError, extract_audio, probe_duration, split_audio
@@ -120,6 +120,9 @@ class Pipeline:
         if source_type == "upload":
             path = Path(source_value)
             wtype = work_type or detect_work_type(path)
+            # 用文件名（去扩展名）兜底标题，避免导出成 "任务 <uuid>"
+            if not title:
+                title = path.stem or None
         else:
             wtype = work_type or "video"
         task = Task(

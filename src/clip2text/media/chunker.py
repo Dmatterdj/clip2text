@@ -60,7 +60,9 @@ def _detect_silences(
     starts = [float(m) for m in _SILENCE_START.findall(out)]
     ends = [float(m) for m in _SILENCE_END.findall(out)]
     # 某个静音段没有 end（音频结尾就是静音）时，用一个大值占位
-    pairs = list(zip(starts, ends + [float("inf")] * (len(starts) - len(ends))))
+    # 补齐到等长后 zip，strict=True 表达「此时两列必然等长」的意图
+    padded = ends + [float("inf")] * max(0, len(starts) - len(ends))
+    pairs = list(zip(starts, padded, strict=True))
     return pairs
 
 

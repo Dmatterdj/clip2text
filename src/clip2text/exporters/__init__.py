@@ -134,7 +134,6 @@ def to_markdown(task: Task) -> bytes:
 # ---------------- docx ----------------
 def to_docx(task: Task) -> bytes:
     from docx import Document
-    from docx.shared import Pt
 
     doc = Document()
 
@@ -198,7 +197,7 @@ def to_xlsx(task: Task) -> bytes:
     elif task.text_content:
         ws.append([1, "", "", task.text_content])
 
-    for col, width in zip("ABCD", (8, 12, 12, 100), strict=False):
+    for col, width in zip("ABCD", (8, 12, 12, 100), strict=True):
         ws.column_dimensions[col].width = width
 
     meta = wb.create_sheet("任务信息")

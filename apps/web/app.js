@@ -3,9 +3,12 @@
    刻意不用框架——这个页面就三屏，引入 React 只会让 clone 变重。 */
 
 const API = (() => {
-  // 同源部署时用相对路径；file:// 或独立静态托管时退回本机 8000
-  if (location.protocol === 'file:') return 'http://127.0.0.1:8000/api/v1';
-  if (location.port === '8000') return '/api/v1';
+  // 只要是由服务本身托管（任何端口），就用同源相对路径。
+  // 不要写死 8000：用户可能用 --port 换端口，写死会导致能力探测全部失败。
+  if (location.protocol === 'http:' || location.protocol === 'https:') {
+    return '/api/v1';
+  }
+  // 直接双击打开 index.html（file://）时才退回本机默认端口
   return 'http://127.0.0.1:8000/api/v1';
 })();
 

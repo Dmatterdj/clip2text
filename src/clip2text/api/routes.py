@@ -16,12 +16,12 @@ import uuid
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, BackgroundTasks, File, HTTPException, Query, Request, UploadFile
+from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import Response, StreamingResponse
 
 from ..asr import engine_statuses
 from ..config import Settings
-from ..exporters import EXTENSIONS, MEDIA_TYPES, SUPPORTED, export, safe_filename
+from ..exporters import MEDIA_TYPES, SUPPORTED, export, safe_filename
 from ..media import get_resolve_error, resolve_ffmpeg
 from ..models import Task, TaskStatus
 from ..ocr import ocr_statuses
@@ -310,7 +310,7 @@ def _sse(event: str, data: object) -> str:
 # ---------------------------------------------------------------- export
 @router.post("/tasks/{task_id}/export", summary="导出任务结果")
 def export_task(task_id: str, payload: dict[str, object] | None = None) -> Response:
-    st = get_state()
+    _ = get_state()  # 确保 AppState 已初始化
     task = _task_or_404(task_id)
     fmt = str((payload or {}).get("format") or "txt").lower()
     if fmt not in SUPPORTED:

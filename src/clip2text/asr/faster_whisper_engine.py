@@ -20,6 +20,23 @@ log = logging.getLogger(__name__)
 _MODEL_CACHE: dict[tuple[str, str, str], object] = {}
 _CACHE_LOCK = threading.Lock()
 
+# faster-whisper 的模型名对应到 HuggingFace 仓库，用于判断本地缓存与离线模式
+_HF_REPO_NAMES = {
+    "tiny": "Systran/faster-whisper-tiny",
+    "tiny.en": "Systran/faster-whisper-tiny.en",
+    "base": "Systran/faster-whisper-base",
+    "base.en": "Systran/faster-whisper-base.en",
+    "small": "Systran/faster-whisper-small",
+    "small.en": "Systran/faster-whisper-small.en",
+    "medium": "Systran/faster-whisper-medium",
+    "medium.en": "Systran/faster-whisper-medium.en",
+    "large-v1": "Systran/faster-whisper-large-v1",
+    "large-v2": "Systran/faster-whisper-large-v2",
+    "large-v3": "Systran/faster-whisper-large-v3",
+    "large-v3-turbo": "deepdml/faster-whisper-large-v3-turbo-ct2",
+    "distil-large-v3": "Systran/faster-distil-whisper-large-v3",
+}
+
 
 class FasterWhisperEngine(BaseEngine):
     name = "faster-whisper"
@@ -59,6 +76,15 @@ class FasterWhisperEngine(BaseEngine):
     def transcribe(self, audio: Path, language: str | None = None) -> Transcript:
         if not self.available():
             raise ASRError(self.unavailable_reason() or "faster-whisper 不可用")
+
+        # 与 mlx 引擎同样的顺序要求：HF 环境变量必须在 import 前设好，
+        # 否则已缓存的模型每次仍会联网校验 revision（国内网络下白等几十秒）。
+        from .hf import apply_hf_endpoint, prepare_offline
+
+        apply_hf_endpoint()
+        if self.model_name in _HF_REPO_NAMES:
+            prepare_offline(_HF_REPO_NAMES[self.model_name])
+
         model = self._load()
         try:
             seg_iter, info = model.transcribe(

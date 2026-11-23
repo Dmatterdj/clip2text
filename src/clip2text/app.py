@@ -14,7 +14,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import __version__
@@ -76,14 +76,11 @@ def create_app() -> FastAPI:
             {"detail": f"服务器内部错误：{type(exc).__name__}"}, status_code=500
         )
 
-    # 前端：apps/web 里有 index.html 就托管
+    # 前端：apps/web 里有 index.html 就托管到根路径。
+    # 必须挂在最后，Starlette 按注册顺序匹配，这样 /api/* 优先命中路由。
+    # 挂在子路径（如 /app）会让 index.html 里的相对路径 ./app.js 变成 /app.js 而 404。
     if (WEB_DIR / "index.html").exists():
-        app.mount("/app", StaticFiles(directory=WEB_DIR, html=True), name="web")
-
-        @app.get("/", include_in_schema=False)
-        def root() -> FileResponse:
-            return FileResponse(WEB_DIR / "index.html")
-
+        app.mount("/", StaticFiles(directory=WEB_DIR, html=True), name="web")
     else:
 
         @app.get("/", include_in_schema=False)

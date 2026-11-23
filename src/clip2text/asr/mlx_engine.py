@@ -55,19 +55,22 @@ class MLXWhisperEngine(BaseEngine):
             raise ASRError(self.unavailable_reason() or "mlx-whisper 不可用")
 
         from ..media.ffmpeg import ensure_ffmpeg_on_path
-        from .hf import apply_hf_endpoint, download_hint, snapshot_complete
+        from .hf import apply_hf_endpoint, download_hint, prepare_offline, snapshot_complete
 
-        # 必须在 import mlx_whisper 之前设置，huggingface_hub 是在 import 时读的
+        # ---- 关键顺序：所有 HF 相关设置必须在 import mlx_whisper 之前 ----
+        # huggingface_hub 在模块级读 HF_HUB_OFFLINE，import 之后再设环境变量无效。
+        # 不提前设的话，已缓存模型每次转写仍会先联网校验 revision，
+        # 国内网络下白等 ~80 秒（实测 84.5s vs 3.4s）。
         apply_hf_endpoint()
+        if not snapshot_complete(self.model_name):
+            raise ASRError(download_hint(self.model_name))
+        prepare_offline(self.model_name)
+
         import mlx_whisper
 
         # mlx_whisper 内部直接调 "ffmpeg" 读音频，不认绝对路径。
         # static-ffmpeg 的 bin 目录不在 PATH 里，必须先注入，否则报 FileNotFoundError。
         ensure_ffmpeg_on_path()
-
-        # 先查缓存是否完整：残缺快照会让 mlx_whisper 抛难以理解的异常
-        if not snapshot_complete(self.model_name):
-            raise ASRError(download_hint(self.model_name))
 
         try:
             result = mlx_whisper.transcribe(
