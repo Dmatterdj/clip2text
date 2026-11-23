@@ -44,14 +44,15 @@ const die = (msg) => {
 // ---------------- 工具 ----------------
 /**
  * DSH 会话桶目录名 = 绝对路径去掉开头的 /，把 / 换成 -，
- * 每个非 ASCII 字符换成 ~XXXX（UTF-16 码元）。
+ * 再把所有不在 [A-Za-z0-9._-] 内的字符换成 ~XXXX（十六进制，4 位大写）。
+ * 注意：不只是非 ASCII，连 & 这类符号也会被转义。
  * 例：/Users/x/个人/clip2text -> --Users-x-~4E2A~4EBA-clip2text--
  */
 function bucketName(absPath) {
   const body = absPath
     .replace(/^\//, '')
     .replace(/\//g, '-')
-    .replace(/[^\x00-\x7F]/g, (ch) => '~' + ch.charCodeAt(0).toString(16).toUpperCase().padStart(4, '0'))
+    .replace(/[^A-Za-z0-9._-]/g, (ch) => '~' + ch.charCodeAt(0).toString(16).toUpperCase().padStart(4, '0'))
   return `--${body}--`
 }
 
