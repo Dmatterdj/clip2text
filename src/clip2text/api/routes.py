@@ -22,6 +22,8 @@ from fastapi.responses import Response, StreamingResponse
 from ..asr import engine_statuses
 from ..config import Settings
 from ..exporters import MEDIA_TYPES, SUPPORTED, export, safe_filename
+from ..extractors import platform_summary
+from ..llm import style_list
 from ..media import get_resolve_error, resolve_ffmpeg
 from ..models import Task, TaskStatus
 from ..ocr import ocr_statuses
@@ -69,10 +71,14 @@ def capabilities() -> dict[str, object]:
         },
         "extractors": {
             "enabled": settings.extractors_enabled,
-            "platforms": [],
+            "platforms": platform_summary() if settings.extractors_enabled else [],
             "reason": None
             if settings.extractors_enabled
             else "默认关闭（设置 EXTRACTORS_ENABLED=true 开启）",
+        },
+        "rewrite": {
+            "available": st.llm.configured,
+            "styles": [s["key"] for s in style_list()],
         },
         "exporters": list(SUPPORTED),
         "limits": {

@@ -99,12 +99,67 @@ class TaskCreate(BaseModel):
     title: str | None = None
 
 
-class TaskPublic(BaseModel):
-    """对外暴露的任务视图（与内部 Task 一致，保留以便将来裁剪敏感字段）。"""
+class BatchStatus(str, Enum):
+    PENDING = "PENDING"
+    RUNNING = "RUNNING"
+    DONE = "DONE"
+    PARTIAL = "PARTIAL"  # 部分成功部分失败
+    FAILED = "FAILED"
+    CANCELED = "CANCELED"
 
-    @classmethod
-    def from_task(cls, task: Task) -> dict[str, Any]:
-        return task.model_dump(mode="json")
+    @property
+    def terminal(self) -> bool:
+        return self in {
+            BatchStatus.DONE,
+            BatchStatus.PARTIAL,
+            BatchStatus.FAILED,
+            BatchStatus.CANCELED,
+        }
+
+
+class Batch(BaseModel):
+    """一次提交多条链接/文件。进度由子任务汇总，不单独维护。"""
+
+    id: str
+    source_type: Literal["url", "upload"] = "url"
+    title: str | None = None
+    task_ids: list[str] = Field(default_factory=list)
+    status: BatchStatus = BatchStatus.PENDING
+
+    total: int = 0
+    succeeded: int = 0
+    failed: int = 0
+    canceled: int = 0
+
+    # 提交时被去重掉的条目（重复链接）
+    duplicates: list[str] = Field(default_factory=list)
+    # 提交时就被判为无效的条目（格式不对）
+    invalid: list[str] = Field(default_factory=list)
+
+    created_at: datetime = Field(default_factory=utcnow)
+    updated_at: datetime = Field(default_factory=utcnow)
+
+    @property
+    def done(self) -> int:
+        return self.succeeded + self.failed + self.canceled
+
+    @property
+    def progress(self) -> int:
+        if not self.total:
+            return 0
+        return round(self.done / self.total * 100)
+
+
+class BatchCreate(BaseModel):
+    """批量提交。两种输入形式：
+    · urls：多行文本或字符串数组，逐条解析
+    · paths：上传文件的 path 列表
+    """
+
+    source_type: Literal["url", "upload"] = "url"
+    items: list[str] = Field(default_factory=list, description="链接或上传文件路径列表")
+    text: str | None = Field(default=None, description="多行文本，每行一条链接")
+    title: str | None = None
 
 
 class EngineStatus(BaseModel):

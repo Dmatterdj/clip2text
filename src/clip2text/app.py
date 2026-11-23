@@ -18,6 +18,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import __version__
+from .api.batch_routes import router as batch_router
 from .api.routes import router
 from .config import get_settings
 from .pipeline import PipelineError
@@ -64,6 +65,7 @@ def create_app() -> FastAPI:
     )
 
     app.include_router(router)
+    app.include_router(batch_router)
 
     @app.exception_handler(PipelineError)
     async def _pipeline_error(_: Request, exc: PipelineError) -> JSONResponse:

@@ -315,3 +315,128 @@ main {
   .topbar { padding: 14px 16px; }
   .dropzone { padding: 26px 14px; }
 }
+
+/* ================= 模式切换 ================= */
+.mode-switch {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  width: fit-content;
+}
+.mode {
+  font: inherit;
+  font-size: 13.5px;
+  border: none;
+  background: none;
+  color: var(--text-dim);
+  padding: 7px 18px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background .15s, color .15s;
+}
+.mode.active {
+  background: var(--accent);
+  color: var(--accent-fg);
+  font-weight: 600;
+}
+.mode:not(.active):hover { color: var(--text); }
+
+/* ================= 警告框 ================= */
+.warn-box {
+  margin-bottom: 12px;
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--warn) 40%, var(--border));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--warn) 8%, transparent);
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--text);
+}
+.warn-box code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12.5px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+}
+
+/* ================= 批量 ================= */
+#batchInput {
+  width: 100%;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.7;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+  color: var(--text);
+  resize: vertical;
+}
+
+.batch-list { display: flex; flex-direction: column; gap: 6px; }
+.batch-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-size: 13px;
+}
+.batch-item .bi-main { flex: 1; min-width: 0; }
+.batch-item .bi-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: block;
+}
+.batch-item .bi-sub {
+  color: var(--text-dim);
+  font-size: 12px;
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.batch-item .bi-actions { display: flex; gap: 6px; flex-shrink: 0; }
+.batch-item.done { cursor: pointer; }
+.batch-item.done:hover { border-color: color-mix(in srgb, var(--text) 22%, var(--border)); }
+
+/* ================= 改写 ================= */
+.rewrite-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.select {
+  font: inherit;
+  font-size: 13.5px;
+  padding: 7px 12px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+  min-width: 160px;
+}
+
+#rewriteOutput {
+  width: 100%;
+  font: inherit;
+  font-size: 14px;
+  line-height: 1.8;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+  color: var(--text);
+  resize: vertical;
+}

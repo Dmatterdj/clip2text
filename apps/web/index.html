@@ -21,81 +21,143 @@
   </header>
 
   <main>
-    <!-- 上传区 -->
-    <section class="card" id="uploadCard">
-      <h2>1 · 选择文件</h2>
-      <div class="dropzone" id="dropzone" tabindex="0" role="button"
-           aria-label="点击或拖拽文件到此处上传">
-        <input type="file" id="fileInput" hidden
-               accept=".mp4,.mov,.mkv,.avi,.webm,.flv,.wmv,.m4v,.ts,.3gp,.mp3,.wav,.m4a,.aac,.flac,.ogg,.opus,.wma,.amr,.aiff">
-        <div class="dz-inner">
-          <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-               stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-            <polyline points="7 10 12 5 17 10"/><line x1="12" y1="5" x2="12" y2="16"/>
-          </svg>
-          <strong>点击选择</strong> 或把音视频拖到这里
-          <span class="hint" id="limitHint">支持 mp4 / mov / mp3 / wav / m4a 等</span>
+    <!-- 模式切换 -->
+    <div class="mode-switch" role="tablist">
+      <button class="mode active" data-mode="single" role="tab" aria-selected="true">
+        单个文件
+      </button>
+      <button class="mode" data-mode="batch" role="tab" aria-selected="false">
+        批量链接
+      </button>
+    </div>
+
+    <!-- ==================== 单文件模式 ==================== -->
+    <div id="mode-single">
+      <section class="card">
+        <h2>1 · 选择文件</h2>
+        <div class="dropzone" id="dropzone" tabindex="0" role="button"
+             aria-label="点击或拖拽文件到此处上传">
+          <input type="file" id="fileInput" hidden
+                 accept=".mp4,.mov,.mkv,.avi,.webm,.flv,.wmv,.m4v,.ts,.3gp,.mp3,.wav,.m4a,.aac,.flac,.ogg,.opus,.wma,.amr,.aiff,.jpg,.jpeg,.png,.webp,.bmp">
+          <div class="dz-inner">
+            <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+              <polyline points="7 10 12 5 17 10"/><line x1="12" y1="5" x2="12" y2="16"/>
+            </svg>
+            <strong>点击选择</strong> 或把文件拖到这里
+            <span class="hint" id="limitHint">音视频或图片</span>
+          </div>
         </div>
-      </div>
-      <div class="file-row" id="fileRow" hidden>
-        <span class="file-name" id="fileName"></span>
-        <span class="file-size" id="fileSize"></span>
-        <button class="btn ghost" id="clearFile" type="button">更换</button>
-      </div>
-      <div class="progress" id="uploadProgress" hidden>
-        <div class="bar"><i id="uploadBar"></i></div>
-        <span id="uploadPct">0%</span>
-      </div>
-    </section>
-
-    <!-- 操作区 -->
-    <section class="card">
-      <h2>2 · 开始提取</h2>
-      <div class="actions">
-        <button class="btn primary" id="startBtn" type="button" disabled>
-          开始转写
-        </button>
-        <button class="btn ghost" id="cancelBtn" type="button" hidden>取消</button>
-        <span class="status-text" id="statusText"></span>
-      </div>
-      <p class="disclaimer">
-        文件只在本机处理，不会上传到任何第三方服务。
-      </p>
-    </section>
-
-    <!-- 结果区 -->
-    <section class="card" id="resultCard" hidden>
-      <h2>3 · 结果</h2>
-      <div class="result-meta" id="resultMeta"></div>
-
-      <div class="tabs" role="tablist">
-        <button class="tab active" data-tab="text" role="tab" aria-selected="true">正文</button>
-        <button class="tab" data-tab="segments" role="tab" aria-selected="false">分句</button>
-      </div>
-
-      <div class="tab-panel" id="panel-text">
-        <textarea id="resultText" readonly rows="12" spellcheck="false"></textarea>
-        <div class="row-actions">
-          <button class="btn ghost" id="copyText" type="button">复制全文</button>
-          <span class="copy-hint" id="copyHint"></span>
+        <div class="file-row" id="fileRow" hidden>
+          <span class="file-name" id="fileName"></span>
+          <span class="file-size" id="fileSize"></span>
+          <button class="btn ghost" id="clearFile" type="button">更换</button>
         </div>
-      </div>
+        <div class="progress" id="uploadProgress" hidden>
+          <div class="bar"><i id="uploadBar"></i></div>
+          <span id="uploadPct">0%</span>
+        </div>
+      </section>
 
-      <div class="tab-panel" id="panel-segments" hidden>
-        <div class="segments" id="segments"></div>
-      </div>
+      <section class="card">
+        <h2>2 · 开始提取</h2>
+        <div class="actions">
+          <button class="btn primary" id="startBtn" type="button" disabled>开始转写</button>
+          <button class="btn ghost" id="cancelBtn" type="button" hidden>取消</button>
+          <span class="status-text" id="statusText"></span>
+        </div>
+        <p class="disclaimer">文件只在本机处理，不会上传到任何第三方服务。</p>
+      </section>
 
-      <div class="export-row">
-        <span>导出：</span>
-        <button class="btn chip" data-format="txt" type="button">TXT</button>
-        <button class="btn chip" data-format="markdown" type="button">Markdown</button>
-        <button class="btn chip" data-format="docx" type="button">Word</button>
-        <button class="btn chip" data-format="xlsx" type="button">Excel</button>
-      </div>
-    </section>
+      <section class="card" id="resultCard" hidden>
+        <h2>3 · 结果</h2>
+        <div class="result-meta" id="resultMeta"></div>
 
-    <!-- 历史 -->
+        <div class="tabs" role="tablist">
+          <button class="tab active" data-tab="text" role="tab" aria-selected="true">正文</button>
+          <button class="tab" data-tab="segments" role="tab" aria-selected="false">分句</button>
+          <button class="tab" data-tab="rewrite" role="tab" aria-selected="false" id="rewriteTab" hidden>改写</button>
+        </div>
+
+        <div class="tab-panel" id="panel-text">
+          <textarea id="resultText" readonly rows="12" spellcheck="false"></textarea>
+          <div class="row-actions">
+            <button class="btn ghost" id="copyText" type="button">复制全文</button>
+            <span class="copy-hint" id="copyHint"></span>
+          </div>
+        </div>
+
+        <div class="tab-panel" id="panel-segments" hidden>
+          <div class="segments" id="segments"></div>
+        </div>
+
+        <div class="tab-panel" id="panel-rewrite" hidden>
+          <div class="rewrite-controls">
+            <select id="styleSelect" class="select"></select>
+            <button class="btn primary small" id="doRewrite" type="button">开始改写</button>
+            <span class="status-text" id="rewriteStatus"></span>
+          </div>
+          <textarea id="rewriteOutput" readonly rows="10" spellcheck="false"
+                    placeholder="改写结果会显示在这里"></textarea>
+          <div class="row-actions">
+            <button class="btn ghost" id="copyRewrite" type="button">复制改写结果</button>
+            <span class="copy-hint" id="rewriteHint"></span>
+          </div>
+        </div>
+
+        <div class="export-row">
+          <span>导出：</span>
+          <button class="btn chip" data-format="txt" type="button">TXT</button>
+          <button class="btn chip" data-format="markdown" type="button">Markdown</button>
+          <button class="btn chip" data-format="docx" type="button">Word</button>
+          <button class="btn chip" data-format="xlsx" type="button">Excel</button>
+        </div>
+      </section>
+    </div>
+
+    <!-- ==================== 批量模式 ==================== -->
+    <div id="mode-batch" hidden>
+      <section class="card">
+        <h2>批量提交链接</h2>
+        <p class="disclaimer" id="batchHint">
+          每行一条作品链接，单次最多 <b id="batchLimit">100</b> 条。
+          重复链接会自动去重。
+        </p>
+        <div class="warn-box" id="extractWarn" hidden>
+          链接解析当前处于关闭状态。请在 <code>.env</code> 里设置
+          <code>EXTRACTORS_ENABLED=true</code> 后重启服务。
+          <br><br>
+          开启后请仅用于处理你拥有版权的内容。详见 README 的合规说明。
+        </div>
+        <textarea id="batchInput" rows="8" spellcheck="false"
+                  placeholder="https://www.bilibili.com/video/BV1xx411c7mD&#10;https://v.douyin.com/xxxxx&#10;https://www.xiaohongshu.com/explore/xxxxx"></textarea>
+        <div class="actions" style="margin-top:12px">
+          <button class="btn primary" id="batchStart" type="button">开始批量提取</button>
+          <button class="btn ghost" id="batchCancel" type="button" hidden>取消</button>
+          <span class="status-text" id="batchStatus"></span>
+        </div>
+        <div class="progress" id="batchProgress" hidden>
+          <div class="bar"><i id="batchBar"></i></div>
+          <span id="batchPct">0%</span>
+        </div>
+      </section>
+
+      <section class="card" id="batchResultCard" hidden>
+        <div class="card-head">
+          <h2>批量结果</h2>
+          <span class="status-text" id="batchSummary"></span>
+        </div>
+        <div class="batch-list" id="batchList"></div>
+        <div class="export-row">
+          <span>合并导出全部成功项：</span>
+          <button class="btn chip" data-batch-export="txt" type="button">TXT</button>
+          <button class="btn chip" data-batch-export="markdown" type="button">Markdown</button>
+        </div>
+      </section>
+    </div>
+
+    <!-- ==================== 历史 ==================== -->
     <section class="card">
       <div class="card-head">
         <h2>历史记录</h2>

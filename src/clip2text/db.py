@@ -15,7 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from .models import Segment, Stage, Task, TaskStatus, utcnow
+from .models import Batch, BatchStatus, Segment, Stage, Task, TaskStatus, utcnow
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS tasks (
@@ -47,6 +47,24 @@ CREATE TABLE IF NOT EXISTS tasks (
 CREATE INDEX IF NOT EXISTS idx_tasks_status     ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_tasks_created_at ON tasks(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_tasks_source     ON tasks(source_value);
+
+CREATE TABLE IF NOT EXISTS batches (
+    id          TEXT PRIMARY KEY,
+    source_type TEXT NOT NULL,
+    title       TEXT,
+    task_ids    TEXT NOT NULL DEFAULT '[]',
+    status      TEXT NOT NULL,
+    total       INTEGER NOT NULL DEFAULT 0,
+    succeeded   INTEGER NOT NULL DEFAULT 0,
+    failed      INTEGER NOT NULL DEFAULT 0,
+    canceled    INTEGER NOT NULL DEFAULT 0,
+    duplicates  TEXT NOT NULL DEFAULT '[]',
+    invalid     TEXT NOT NULL DEFAULT '[]',
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_batches_created_at ON batches(created_at DESC);
 """
 
 
@@ -232,3 +250,86 @@ class Database:
                 "SELECT status, COUNT(*) AS c FROM tasks GROUP BY status"
             ).fetchall()
         return {r["status"]: r["c"] for r in rows}
+
+    # ---------------- 批量 ----------------
+    @staticmethod
+    def _row_to_batch(row: sqlite3.Row) -> Batch:
+        return Batch(
+            id=row["id"],
+            source_type=row["source_type"],
+            title=row["title"],
+            task_ids=json.loads(row["task_ids"] or "[]"),
+            status=BatchStatus(row["status"]),
+            total=row["total"],
+            succeeded=row["succeeded"],
+            failed=row["failed"],
+            canceled=row["canceled"],
+            duplicates=json.loads(row["duplicates"] or "[]"),
+            invalid=json.loads(row["invalid"] or "[]"),
+            created_at=_str_to_dt(row["created_at"]),
+            updated_at=_str_to_dt(row["updated_at"]),
+        )
+
+    def create_batch(self, batch: Batch) -> Batch:
+        params = {
+            "id": batch.id,
+            "source_type": batch.source_type,
+            "title": batch.title,
+            "task_ids": json.dumps(batch.task_ids, ensure_ascii=False),
+            "status": batch.status.value,
+            "total": batch.total,
+            "succeeded": batch.succeeded,
+            "failed": batch.failed,
+            "canceled": batch.canceled,
+            "duplicates": json.dumps(batch.duplicates, ensure_ascii=False),
+            "invalid": json.dumps(batch.invalid, ensure_ascii=False),
+            "created_at": _dt_to_str(batch.created_at),
+            "updated_at": _dt_to_str(batch.updated_at),
+        }
+        cols = ", ".join(params)
+        placeholders = ", ".join(f":{c}" for c in params)
+        with self._lock:
+            self._conn.execute(
+                f"INSERT INTO batches ({cols}) VALUES ({placeholders})", params
+            )
+            self._conn.commit()
+        return batch
+
+    def update_batch(self, batch_id: str, **fields: Any) -> None:
+        if not fields:
+            return
+        if "status" in fields and isinstance(fields["status"], BatchStatus):
+            fields["status"] = fields["status"].value
+        for key in ("task_ids", "duplicates", "invalid"):
+            if key in fields:
+                fields[key] = json.dumps(fields[key], ensure_ascii=False)
+        fields["updated_at"] = _dt_to_str(utcnow())
+        assignments = ", ".join(f"{k}=:{k}" for k in fields)
+        fields["_id"] = batch_id
+        with self._lock:
+            self._conn.execute(
+                f"UPDATE batches SET {assignments} WHERE id=:_id", fields
+            )
+            self._conn.commit()
+
+    def get_batch(self, batch_id: str) -> Batch | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM batches WHERE id=?", (batch_id,)
+            ).fetchone()
+        return self._row_to_batch(row) if row else None
+
+    def list_batches(self, *, limit: int = 50, offset: int = 0) -> tuple[list[Batch], int]:
+        with self._lock:
+            total = self._conn.execute("SELECT COUNT(*) AS c FROM batches").fetchone()["c"]
+            rows = self._conn.execute(
+                "SELECT * FROM batches ORDER BY created_at DESC LIMIT ? OFFSET ?",
+                (limit, offset),
+            ).fetchall()
+        return [self._row_to_batch(r) for r in rows], total
+
+    def delete_batch(self, batch_id: str) -> bool:
+        with self._lock:
+            cur = self._conn.execute("DELETE FROM batches WHERE id=?", (batch_id,))
+            self._conn.commit()
+        return cur.rowcount > 0

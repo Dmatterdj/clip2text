@@ -192,10 +192,12 @@ class Pipeline:
             else:
                 src = await self._fetch_remote(task, work_dir)
 
-            # ---- 2. 音频抽取 ----
+            # ---- 2. 图片走 OCR 分支 ----
             if task.work_type == "image":
-                raise PipelineError("图片 OCR 尚未实现（计划在 P3 提供）")
+                await self._run_ocr(task, src, work_dir)
+                return task
 
+            # ---- 2b. 音频抽取 ----
             await self._set(task, stage=Stage.TRANSCODING, progress=15)
             wav = await asyncio.to_thread(
                 extract_audio, src, work_dir / "audio.wav", mode=self.settings.ffmpeg_mode
@@ -217,7 +219,7 @@ class Pipeline:
                 mode=self.settings.ffmpeg_mode,
             )
 
-            # ---- 4. 逐片转写 ----
+            # ---- 2c. 逐片转写 ----
             await self._set(
                 task, stage=Stage.TRANSCRIBING, progress=30, engine=engine.name
             )
@@ -246,7 +248,7 @@ class Pipeline:
                 pct = 30 + int(60 * (i + 1) / total)
                 await self._set(task, progress=pct)
 
-            # ---- 5. 组装结果 ----
+            # ---- 3. 组装结果 ----
             await self._set(task, stage=Stage.PACKAGING, progress=95)
             sep = "" if _is_cjk(language) else " "
             full_text = sep.join(t for t in texts if t).strip()
@@ -285,6 +287,76 @@ class Pipeline:
             self._cancelled.discard(task_id)
             # 保留源文件，但清掉中间产物（分片很占空间）
             shutil.rmtree(work_dir / "chunks", ignore_errors=True)
+
+    async def _run_ocr(self, task: Task, src: Path, work_dir: Path) -> None:
+        """图片 OCR 分支。
+
+        两种来源：
+          · 单张图片上传：src 就是图片
+          · 图文作品解析：图片 URL 列表需要先下载
+        """
+        from .ocr import OCRError, recognize_images
+
+        await self._set(task, stage=Stage.OCR, progress=30)
+
+        images: list[Path] = []
+        if task.image_urls:
+            images = await asyncio.to_thread(
+                self._download_images, task, task.image_urls, work_dir
+            )
+        elif src.suffix.lower() in IMAGE_EXT:
+            images = [src]
+
+        if not images:
+            raise PipelineError("没有可识别的图片")
+
+        def progress(ratio: float) -> None:
+            # OCR 占流程的 30-90%
+            task.progress = 30 + int(60 * ratio)
+
+        try:
+            result = await asyncio.to_thread(
+                recognize_images, images, self.settings, on_progress=progress
+            )
+        except OCRError as exc:
+            raise PipelineError(str(exc)) from exc
+
+        await self._set(
+            task,
+            stage=Stage.DONE,
+            status=TaskStatus.SUCCESS,
+            progress=100,
+            text_content=result.text,
+            engine=f"ocr:{result.engine}",
+            image_urls=[str(p) for p in images] if not task.image_urls else task.image_urls,
+            error_message=None,
+        )
+        log.info("任务 %s OCR 完成：%d 张图，%d 字", task.id, len(images), len(result.text))
+
+    def _download_images(
+        self, task: Task, urls: list[str], work_dir: Path
+    ) -> list[Path]:
+        """把图文作品的图片下载到本地，交给 OCR。"""
+        import httpx
+
+        out_dir = work_dir / "images"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        paths: list[Path] = []
+        with httpx.Client(
+            timeout=60, follow_redirects=True, proxy=self.settings.proxy_url or None
+        ) as client:
+            for i, url in enumerate(urls):
+                try:
+                    resp = client.get(url)
+                    resp.raise_for_status()
+                except httpx.HTTPError as exc:
+                    log.warning("下载第 %d 张图失败：%s", i + 1, exc)
+                    continue
+                suffix = Path(url.split("?")[0]).suffix or ".jpg"
+                dst = out_dir / f"img_{i:03d}{suffix}"
+                dst.write_bytes(resp.content)
+                paths.append(dst)
+        return paths
 
     async def _fetch_remote(self, task: Task, work_dir: Path) -> Path:
         """链接解析。默认关闭，需要 EXTRACTORS_ENABLED=true。"""

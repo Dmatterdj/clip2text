@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import logging
 
+from .batch import BatchRunner
 from .config import Settings, get_settings
 from .db import Database
+from .llm import build_llm_config
 from .pipeline import Pipeline
 
 log = logging.getLogger(__name__)
@@ -21,10 +23,18 @@ class AppState:
         self.settings.ensure_dirs()
         self.db = Database(self.settings.db_path)
         self.pipeline = Pipeline(self.settings, self.db)
+        self.batches = BatchRunner(self.pipeline, self.settings, self.db)
+        self.llm = build_llm_config(
+            self.settings.llm_base_url, self.settings.llm_api_key, self.settings.llm_model
+        )
 
     def startup(self) -> None:
         # 上次进程留下的 RUNNING 任务不会自己完成，标记失败避免前端永远转圈
         self.pipeline.recover_orphans()
+        # 批量同理
+        for batch in self.db.list_batches(limit=1000)[0]:
+            if not batch.status.terminal:
+                self.db.update_batch(batch.id, status="FAILED")
 
     def shutdown(self) -> None:
         self.db.close()
