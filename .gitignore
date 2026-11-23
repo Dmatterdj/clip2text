@@ -1,0 +1,45 @@
+# 环境与密钥
+.env
+.env.local
+*.cookie
+cookies.txt
+
+# 运行时数据
+.data/
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# 模型缓存
+models/
+.cache/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+dist/
+build/
+
+# Node
+node_modules/
+.next/
+.nuxt/
+.output/
+dist/
+
+# 编辑器 / 系统
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# 测试产物
+/tmp-test/
+*.log
