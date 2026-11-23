@@ -4,6 +4,9 @@
 ![python](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue)
 ![license](https://img.shields.io/badge/license-Apache--2.0-green)
 
+> **0.1.0 是早期版本。** 核心链路（上传 → 转写 → 导出）已稳定，
+> 但 HTTP API 与配置项在 1.0 之前可能调整。生产使用请锁定版本。
+
 把视频、音频、图片里的内容，提取成可编辑的文字。**本地优先、默认零 API key、不上传第三方。**
 
 一个可以完全跑在自己电脑上的"文案提取"工具。不需要注册、不需要充值，

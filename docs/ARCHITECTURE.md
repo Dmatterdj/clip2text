@@ -1,335 +1,253 @@
-# clip2text 架构设计
+# clip2text 架构梳理 v0.1
 
-> 状态：v1.0，P0–P3 全部实现并验证
-> 目标：**一个 key 都不填，clone 下来就能完整跑通「上传文件 → 转写 → 导出」**。
-> 付费能力一律做成可插拔的可选项，而不是门槛。
-
----
-
-## 1. 设计原则
-
-| 原则 | 含义 | 反例 |
-|---|---|---|
-| **零 key 可跑** | 默认路径不依赖任何外部账号 | 一上来就要求填 ASR key |
-| **能力自描述** | `/api/v1/capabilities` 汇报本机真实可用能力，前端据此禁用按钮 | 前端硬编码「功能都在」然后报错 |
-| **引擎可替换** | ASR/OCR/LLM 都是接口 + 多实现，用配置切换 | 把 faster-whisper 写死在业务逻辑里 |
-| **解析器插件化** | 每个平台一个 adapter，通过 entry_points 注册 | 把小红书逻辑塞进主流程 |
-| **异步任务化** | 所有耗时操作进队列，前端只看状态 | 请求里同步跑 ASR 然后超时 |
-| **契约先于实现** | 先定 Task 数据结构和 API，再写代码 | 各模块各自定义字段，最后对不上 |
+> 这份文档回答三个问题：**现在有什么、怎么连起来的、还缺什么。**
+> 如果你要评估「还需补什么」，直接跳到 [§7 缺口分析](#7-缺口分析)。
 
 ---
 
-## 2. 能力分档（A / B / C）
+## 1. 一句话概括
 
-这是本项目的核心判断：**哪些是白送的，哪些要写代码，哪些必须花钱。**
+一个本地优先的「媒体 → 文字」工具：输入可以是上传的音视频/图片，
+也可以是平台链接；输出是带时间戳的文本，可导出 4 种格式。
 
-### A 档 —— `pip install` 即可，0 key、0 成本
-
-| 能力 | 依赖 | 已验证版本 | 备注 |
-|---|---|---|---|
-| 音视频转码 / 抽音频 | `static-ffmpeg` | 3.0 | 首次运行自动下二进制，规避系统无 ffmpeg |
-| ASR 本地首选 | `faster-whisper` | 1.2.1 | CPU/GPU 通用 |
-| ASR Apple 加速 | `mlx-whisper` | 0.4.3 | Apple Silicon 专用，本项目开发机首选 |
-| ASR 中文优化 | `funasr` | 1.4.28 | SenseVoice，标点/语气词最好 |
-| OCR | `rapidocr-onnxruntime` | 1.4.4 | ⚠️ 要求 Python < 3.13 |
-| 文档导出 | `python-docx`、`openpyxl` | — | docx / xlsx |
-| 任务队列 | SQLite + `asyncio.Semaphore` | 标准库 | 零外部依赖 |
-| 进度推送 | SSE | 标准库 | 替代轮询 |
-
-### B 档 —— 库已存在，但业务逻辑要自己写（花时间不花钱）
-
-| 能力 | 工作量估计 | 说明 |
-|---|---|---|
-| yt-dlp 封装 | ~1 天 | 其已支持小红书 / 抖音 / B站 / 微博 / TikTok / YouTube / 头条 / 西瓜 / AcFun |
-| 快手 adapter | 3-5 天 | yt-dlp 不支持，需处理 `v.kuaishou.com` 跳转与页面内嵌 JSON |
-| 视频号 adapter | 1 周+ | 必须 Playwright，最脆弱 |
-| 音频分片 | ~2 天 | **架构必需**，非优化项（见 §4） |
-| 小红书原图直链 | ~1 天 | 剥离 CDN 的 `imageView2` / `!nd_dft_*` 后缀 |
-| 已烧录水印去除 | 大 | `delogo` 需人工框坐标，一期不做 |
-
-### C 档 —— 必须外部接入（花钱或申请 key）
-
-| 能力 | 为什么躲不掉 | 个人侧成本 |
-|---|---|---|
-| 平台数据（高频抓取） | 小红书/抖音风控 + 签名（`X-s`、`a_bogus`） | 代理 ¥10-50/月起 |
-| 云 ASR（可选） | 不想占用本地算力 / 想更快 | ¥0.78/小时音频（DeepSeek 现价） |
-| LLM 改写（可选） | 本地小模型质量不足 | ¥0.005/条视频 |
-| 商业数据 API（可选） | 完全不想维护解析器 | 按次计费 |
+**核心约束：不填任何 API key 也能完整跑通主链路。**
 
 ---
 
-## 3. 分层架构
+## 2. 分层图
 
 ```
-┌──────────────────────────────────────────────────────┐
-│  apps/web   Next.js / Nuxt 3（SSR，可选）             │
-│  粘贴框 · 任务列表 · 结果卡片 · 导出 · 能力探测        │
-└───────────────────────┬──────────────────────────────┘
-                        │ REST + SSE
-┌───────────────────────▼──────────────────────────────┐
-│  apps/api   FastAPI                                  │
-│  鉴权(可关) · 配额 · 任务 CRUD · capabilities         │
-└───────┬──────────────────────────────┬───────────────┘
-        │ 入队                          │ 查询
-┌───────▼────────────┐        ┌────────▼──────────────┐
-│ SQLite 任务表       │        │ 状态机                │
-│ + 进程内 worker pool│        │ QUEUED→RUNNING→...    │
-└───────┬────────────┘        └───────────────────────┘
-        │
-┌───────▼──────────────────────────────────────────────┐
-│  packages/core  任务编排（stage 流水线）              │
-│   fetching → extracting → transcoding → transcribing  │
-│            → ocr → done                              │
-└───┬──────────┬──────────┬──────────┬─────────────────┘
-    │          │          │          │
-┌───▼───┐ ┌────▼────┐ ┌───▼────┐ ┌───▼──────┐
-│extract│ │ media   │ │  asr   │ │  ocr     │
-│ors    │ │ ffmpeg  │ │ 多引擎 │ │ 多引擎   │
-│插件   │ │ chunker │ │        │ │          │
-└───────┘ └─────────┘ └────────┘ └──────────┘
+┌────────────────────────────────────────────────────────────┐
+│  Web UI  src/clip2text/web/                                │
+│  index.html + style.css + app.js（无构建、无框架）           │
+│  单文件 / 批量 / 结果 / 改写 / 历史 五块                      │
+└───────────────────────┬────────────────────────────────────┘
+                        │  REST + SSE
+┌───────────────────────▼────────────────────────────────────┐
+│  API  api/routes.py · api/batch_routes.py                  │
+│  15 个端点：任务 / 上传 / 批量 / 导出 / 改写 / capabilities    │
+└───────────────────────┬────────────────────────────────────┘
                         │
-              ┌─────────▼──────────┐
-              │ exporters          │
-              │ txt/md/docx/xlsx   │
-              └────────────────────┘
+┌───────────────────────▼────────────────────────────────────┐
+│  state.py   进程级单例（settings + db + pipeline + batches）  │
+└───────────────────────┬────────────────────────────────────┘
+        ┌───────────────┼───────────────┐
+        │               │               │
+┌───────▼──────┐ ┌──────▼──────┐ ┌──────▼──────┐
+│  pipeline.py │ │  batch.py   │ │   llm.py    │
+│  单任务编排   │ │  批量调度    │ │  流式改写    │
+│  5 阶段状态机 │ │  去重/排队   │ │             │
+└───────┬──────┘ └──────┬──────┘ └─────────────┘
+        │               │
+┌───────▼───────────────▼────────────────────────────────────┐
+│  能力层（全部可插拔，Protocol + 多实现）                       │
+│  ├─ extractors/  链接解析  bilibili · yt-dlp · (插件)        │
+│  ├─ media/       ffmpeg 封装 · 静音感知分片                   │
+│  ├─ asr/         mlx · faster-whisper · deepseek             │
+│  ├─ ocr/         rapidocr · deepseek                         │
+│  └─ exporters/   txt · markdown · docx · xlsx                │
+└───────┬─────────────────────────────────────────────────────┘
+        │
+┌───────▼─────────────────────────────────────────────────────┐
+│  db.py   SQLite（tasks + batches），WAL 模式                  │
+└─────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 4. 关键约束：音频必须分片
+## 3. 数据流：三种输入殊途同归
 
-这不是性能优化，是硬性技术约束：
+### 路径 A：上传音视频
+```
+POST /uploads ──► .data/uploads/<id>/
+POST /tasks   ──► 建任务（QUEUED）
+                  │
+                  ▼
+              extract_audio  (ffmpeg → 16k mono wav)
+                  │
+                  ▼
+              split_audio    (silencedetect 找切点，≤110s/段)
+                  │
+                  ▼
+              engine.transcribe × N 段（时间戳平移为绝对时间）
+                  │
+                  ▼
+              SUCCESS: text_content + segments[]
+```
 
-| 服务 | 单次时长上限 | 影响 |
+### 路径 B：上传图片 / 图文作品
+```
+POST /tasks (work_type=image)
+    │
+    ▼
+image_urls 非空？ ──是──► 下载所有图到 work_dir/images/
+    │否
+    ▼
+src 本身就是图片
+    │
+    ▼
+recognize_images (逐张 OCR，单张失败不中断)
+    │
+    ▼
+SUCCESS: text_content
+```
+
+### 路径 C：平台链接（默认关闭）
+```
+POST /tasks (source_type=url)
+    │
+    ▼
+EXTRACTORS_ENABLED? ──否──► 400 错误，提示怎么开
+    │是
+    ▼
+pick_url         (从分享文案里抽链接)
+    │
+    ▼
+插件 → BilibiliExtractor → YtDlpExtractor  (逐个试)
+    │
+    ▼
+下载媒体到 work_dir/source.*
+    │
+    ▼
+回到路径 A 的音频分支
+```
+
+---
+
+## 4. 状态机
+
+### 任务
+
+```
+QUEUED ──► RUNNING ──► SUCCESS
+  │          │
+  │          ├──► FAILED
+  │          └──► CANCELED
+  └──────────┘
+```
+
+阶段（`stage`）依次推进，每步都落库，崩溃后可识别中断点：
+
+```
+queued → fetching → transcoding → transcribing → packaging → done
+                 ↘ ocr（图片走这里）
+```
+
+### 批量
+
+```
+PENDING ──► RUNNING ──► DONE      （全成功）
+                   ├──► PARTIAL  （部分成功）
+                   ├──► FAILED   （全失败）
+                   └──► CANCELED
+```
+
+**批量的计数不自己维护，每次从子任务重算。**
+这条是踩坑后的决定：之前单独维护计数器，出现「状态 DONE 但计数 0/2」，
+进度条永远 0%。
+
+---
+
+## 5. 关键设计决策
+
+| 决策 | 理由 | 代价 |
 |---|---|---|
-| DeepSeek ASR | **120 秒** | 10 分钟视频必须至少切 6 段 |
-| 多数云 ASR | 60s – 5min / 段 | 同上 |
-| 本地 faster-whisper | 无硬限制（受显存约束） | 但仍建议分片以显示进度、支持断点续跑 |
-
-```python
-# packages/media/chunker.py
-def split_by_silence(wav: str, max_sec: int = 110) -> list[Chunk]:
-    """用 ffmpeg silencedetect 找静音点，在句间切分，避免切碎一句话。
-
-    返回的 Chunk 带 (index, start_sec, end_sec, path)，
-    上层据此计算整体进度百分比，并支持中断后从任意 Chunk 续跑。
-    """
-```
-
-同时注意：**DeepSeek ASR 只返回整段 `text`，没有时间戳/分段**。
-若需要「带时间戳的 segments」（本项目的差异化能力），必须走本地 whisper。
-这是真实的取舍点，实现时要在 `capabilities` 里如实上报。
+| 音频必须分片 | 云 ASR 有 120s 硬限制；分片还能显示进度、支持断点 | 多一次 ffmpeg 调用 |
+| 静音点切分 | 避免把一句话劈成两半 | 分片前要跑一次 silencedetect |
+| 引擎 Protocol 化 | 换引擎不改业务代码 | 多一层抽象 |
+| auto = 本地优先 | 装了本地引擎就不该悄悄走付费云 | — |
+| 链接解析默认关 | 抓取他人内容有 ToS/著作权风险 | 用户需显式开启 |
+| 解析器插件化 | 平台失效是常态，别让主仓库背锅 | 用户要额外装包 |
+| 前端不用框架 | 三屏页面，引入 React 只会让 clone 变重 | 手写 DOM 更新 |
+| SQLite 而非 PG | 单用户本地场景，零依赖比扩展性重要 | 多用户要换 |
+| 前端放包内 | wheel 只打包 src/，放外面 pip 装完没界面 | 目录结构略怪 |
 
 ---
 
-## 5. 数据契约
+## 6. 失败处理策略
 
-### 5.1 Task
+**分层降级，不让单点故障毁掉整次请求：**
 
-字段刻意对齐 AnyToCopy 的开放 API 响应，便于迁移与对照。
+| 层 | 策略 |
+|---|---|
+| 解析器 | 插件 → B 站 → yt-dlp 逐个试，全失败才报错，错误消息汇总前 3 条 |
+| OCR | 单张图失败只标注 `[第 N 张图识别失败]`，继续处理余下 |
+| 批量 | `gather(return_exceptions=True)`，单条失败不影响其它 |
+| ASR | 分片级无重试（当前），整段失败则任务失败 |
+| ffmpeg | 三级定位：系统 → static-ffmpeg → 报错并给安装指引 |
+| HF 模型 | 缓存残缺 → 给出三条可操作修复命令（镜像/换小模型/手动下载） |
 
-```python
-class Task(BaseModel):
-    id: str
-    source_type: Literal["url", "upload"]
-    source_value: str
-    platform: str | None            # xhs / douyin / bilibili / local ...
-    work_type: Literal["video", "image", "audio"] | None
-
-    status: Literal["QUEUED", "RUNNING", "SUCCESS", "FAILED", "CANCELED"]
-    stage: Literal[
-        "queued", "fetching", "extracting", "transcoding",
-        "transcribing", "ocr", "packaging", "done",
-    ]
-    progress: int                   # 0-100
-
-    # ---- 结果字段（对齐 AnyToCopy）----
-    title: str | None
-    content: str | None             # 作品正文
-    text_content: str | None        # 语音转写（他们的 textContent）
-    cover: str | None
-    video_url: str | None
-    video_urls: list[str] = []
-    image_urls: list[str] = []
-    audio_url: str | None
-    duration: float | None          # 秒，也是计费依据
-
-    # ---- 差异化 ----
-    segments: list[Segment] = []    # 带时间戳的分句，仅本地 whisper 提供
-    language: str | None
-
-    error_message: str | None
-    created_at: datetime
-    updated_at: datetime
-
-
-class Segment(BaseModel):
-    start: float
-    end: float
-    text: str
-```
-
-### 5.2 引擎接口
-
-```python
-# packages/asr/base.py
-class ASREngine(Protocol):
-    name: str
-    supports_timestamps: bool
-    max_chunk_sec: int | None
-
-    def available(self) -> bool: ...
-    def transcribe(self, wav_path: str, language: str | None) -> Transcript: ...
-
-
-class Transcript(BaseModel):
-    text: str
-    segments: list[Segment]
-    language: str | None
-```
-
-同理定义 `OCREngine`、`Extractor`、`LLMProvider`、`Exporter`。
-
-### 5.3 解析器插件
-
-社区可以单独发一个 pip 包来支持新平台，主仓库不必背锅。
-
-```python
-# packages/extractors/base.py
-class Extractor(Protocol):
-    hosts: tuple[str, ...]
-
-    def matches(self, url: str) -> bool: ...
-    def extract(self, url: str, ctx: ExtractContext) -> ExtractResult: ...
-    def health(self) -> bool: ...
-```
-
-发现机制：
-
-```python
-importlib.metadata.entry_points(group="clip2text.extractors")
-```
-
-社区插件示例 `pyproject.toml`：
-
-```toml
-[project.entry-points."clip2text.extractors"]
-kuaishou = "clip2text_kuaishou:KuaishouExtractor"
-```
+**错误消息的写法约定：不写「失败」，写「怎么办」。**
+例如不写 `yt-dlp 不支持`，而是
+`yt-dlp 暂不支持这个链接。若是快手/视频号，需要装对应的插件包`。
 
 ---
 
-## 6. HTTP API 契约
+## 7. 缺口分析
 
-| Method | Path | 说明 |
-|---|---|---|
-| `POST` | `/api/v1/uploads` | 上传文件，返回 `upload_id` |
-| `POST` | `/api/v1/tasks` | 创建任务 `{source:{type,value}, options}` |
-| `GET` | `/api/v1/tasks/{id}` | 单任务状态与结果 |
-| `GET` | `/api/v1/tasks` | 列表 + 过滤 + 分页 |
-| `DELETE` | `/api/v1/tasks/{id}` | 删除 |
-| `POST` | `/api/v1/tasks/{id}/cancel` | 取消排队/运行中任务 |
-| `GET` | `/api/v1/tasks/{id}/events` | **SSE** 进度流（替代 3s 轮询） |
-| `POST` | `/api/v1/tasks/{id}/export` | `{format: txt\|markdown\|docx\|xlsx}` → 文件流 |
-| `POST` | `/api/v1/rewrite` | `{task_id, style}` → SSE 流式改写 |
-| `GET` | `/api/v1/capabilities` | **★ 本机可用引擎清单** |
-| `GET` | `/api/v1/health` | 健康检查 |
+按「影响发布」排序。
 
-### `/api/v1/capabilities` 响应示例
+### 🔴 阻塞发布
 
-这是整个项目最该有的接口——前端据此决定渲染什么、提示什么。
-
-```json
-{
-  "version": "0.1.0",
-  "ffmpeg": { "available": true, "source": "static", "path": "..." },
-  "asr": [
-    { "name": "mlx", "available": true, "timestamps": true, "max_chunk_sec": null },
-    { "name": "faster-whisper", "available": true, "timestamps": true },
-    { "name": "deepseek", "available": false, "reason": "未配置 DEEPSEEK_API_KEY", "max_chunk_sec": 120 }
-  ],
-  "ocr": [
-    { "name": "rapidocr", "available": true },
-    { "name": "deepseek", "available": false, "reason": "未配置 DEEPSEEK_API_KEY" }
-  ],
-  "llm": { "available": false, "reason": "未配置 LLM_BASE_URL" },
-  "extractors": { "enabled": false, "platforms": [] },
-  "exporters": ["txt", "markdown", "docx", "xlsx"]
-}
-```
-
----
-
-## 7. 成本模型（个人侧）
-
-以**一条 3 分钟视频**（0.05 小时、约 800 字文案）为基准单位：
-
-| 项目 | 纯本地 | 混合（本地 ASR + 云 LLM） | 全云 |
+| # | 缺口 | 影响 | 建议 |
 |---|---|---|---|
-| ASR | ¥0 | ¥0 | ¥0.039（限时 ¥0.019） |
-| OCR（3 张图） | ¥0 | ¥0 | ¥0.005 |
-| LLM 改写 | ¥0（Ollama） | ¥0.005 | ¥0.005 |
-| 平台抓取（含代理摊销） | ¥0 ～ 0.02 | ¥0.02 | ¥0.02 |
-| **单条合计** | **≈¥0** | **≈¥0.025** | **≈¥0.064** |
-| **100 条合计** | **≈¥0** | **≈¥2.5** | **≈¥6.4** |
+| 1 | **没有 CI 实际运行记录** | 配置文件写了但没跑过，可能一推就红 | 推上去看 Actions 结果，修掉即止 |
+| 2 | **无 `NOTICE` / 无版权人署名** | Apache-2.0 的 `LICENSE` 里 `[yyyy] [name]` 还是占位符 | 填真实年份与署名 |
+| 3 | **Windows 未实测** | 只用 `pathlib`，理论上没问题，但没跑过 | CI 里已有 windows smoke，看结果 |
 
-云服务单价（2026-11 核实，汇率 1 USD ≈ 6.68 CNY）：
+### 🟡 影响体验，建议 0.2 补
 
-| API | 官方价 | 折人民币 |
+| # | 缺口 | 说明 |
 |---|---|---|
-| DeepSeek ASR | $0.116 / 小时音频 | ¥0.78（限时 5 折 ¥0.39） |
-| DeepSeek OCR | $0.225 / 1000 页 | ¥0.0015 / 页 |
-| DeepSeek LLM 输入（flash 错峰） | $0.15 / 百万 token | ¥1.0 / 百万 |
-| DeepSeek LLM 输出（flash 错峰） | $0.30 / 百万 token | ¥4.0 / 百万 |
+| 4 | **分片级重试** | 现在一个 2 小时播客切成 70 段，中间任一段失败整任务就废掉。应该重试 2 次并记录 |
+| 5 | **断点续跑未真正实现** | 注释里说「可从中断处继续」，但 `recover_orphans` 实际是把 RUNNING 全标 FAILED。要么实现真续跑，要么改注释 |
+| 6 | **无进度持久化到前端** | SSE 端点存在，但前端用的是 3 秒轮询。SSE 没被用上 |
+| 7 | **文件清理策略缺失** | `.data/uploads/` 和 `.data/work/` 只增不减，跑久了会占满盘 |
+| 8 | **导出没有「全部」格式** | 单任务导 4 种，批量只能导 txt/md |
+| 9 | **没有字幕格式** | `srt` / `vtt` 是最常见需求，`segments` 已在手，加导出器只需 30 行 |
+| 10 | **时间戳不精确** | 分片间用 `chunk.start` 平移，但 ffmpeg 切片可能有毫秒级偏移累积 |
 
-> 一个 key 覆盖 ASR + OCR + LLM 三项，对个人项目是最省心的接法。
+### 🟢 生态与长期
+
+| # | 缺口 | 说明 |
+|---|---|---|
+| 11 | **插件示例包缺失** | 文档说了怎么写插件，但没有可 clone 的模板仓库 |
+| 12 | **没有 Docker** | 有人只想 `docker run`，不想装 Python |
+| 13 | **没有 i18n** | 界面全中文，README 也是中文，不利于国际传播 |
+| 14 | **无鉴权** | 绑定 127.0.0.1 是安全的，但如果 `--host 0.0.0.0` 就裸奔了。建议启动时若非 localhost 则警告或强制要求 token |
+| 15 | **无并发压测** | `MAX_CONCURRENCY=2` 是拍的，没有实测过 MLX 在多线程下的内存峰值 |
+| 16 | **LLM 输出不可保存** | 改写结果只在 textarea 里，刷新就没了 |
 
 ---
 
-## 8. 开发环境约定
+## 8. 我建议的 v0.1 发布范围
 
-| 项 | 值 | 原因 |
-|---|---|---|
-| **Python** | **3.12** | `rapidocr-onnxruntime` 要求 <3.13；FastAPI + pydantic v2 建议 ≥3.11 |
-| Node | ≥20 | 仅前端需要 |
-| 包管理 | `uv`（推荐）或 pip | uv 能锁版本并管理 Python 版本 |
-| 数据库 | SQLite（默认） | 零依赖；预留 `DATABASE_URL` 切 Postgres |
+**现在就能发。** 理由：
 
-⚠️ 开发机当前系统 Python 为 3.9.6，**过旧**，必须先装 3.12。
+- 主链路（上传 → 转写 → 导出）完全可用，且有真实样本验证
+- 89 个测试、ruff 全绿、wheel 可安装
+- 链接解析默认关闭，合规边界清晰
 
----
+**但发之前建议至少做这三件：**
 
-## 9. 里程碑
+1. 填 `LICENSE` 的版权人（10 秒）
+2. 推上去看 CI 是否真的绿（5 分钟）
+3. README 顶部加一句「0.1 是早期版本，接口可能变」（1 分钟）
 
-| 阶段 | 内容 | 状态 |
-|---|---|---|
-| **P0** | 上传音视频 → 转写 → 导出 txt/md/docx | ✅ 已验证（真实语音 + mp4） |
-| **P1** | 链接解析（B 站内置 + yt-dlp 兜底 + 插件） | ✅ 已验证（B 站真实作品） |
-| **P2** | 批量 + 队列 + SSE + 历史 | ✅ 已验证（去重、排队、计数） |
-| **P3** | 图片 OCR + LLM 改写 + 插件生态 | ✅ 已验证（RapidOCR 中文） |
-
-### 实现中发现的三个关键点
-
-1. **HF 联网校验是性能杀手**
-   即便模型已缓存，`huggingface_hub` 每次仍会联网校验 revision。
-   国内网络下白等约 80 秒（实测 84.3s → 3.3s）。
-   修法有坑：`HF_HUB_OFFLINE` 在模块级被读成常量，
-   必须在 import 引擎库**之前**设置。
-
-2. **ffmpeg 的 PATH 问题**
-   `static-ffmpeg` 下载的二进制不在 PATH 里，而 `mlx_whisper` 内部
-   直接调 `subprocess.run(["ffmpeg", ...])`，不认绝对路径。
-   必须在调用前把 bin 目录注入 PATH。
-
-3. **批量计数必须与状态同时落库**
-   只写 status 会出现「状态 DONE 但计数 0/2」，前端进度条永远 0%。
+**第 4 项分片重试**虽然是体验问题，但如果用户第一次跑就是 2 小时播客
+并且中间失败了，印象会很差。可以考虑提前到 0.1.1。
 
 ---
 
-## 10. 合规边界（写进 README）
+## 9. 代码规模
 
-1. 默认关闭链接解析（`EXTRACTORS_ENABLED=false`），仅处理用户**自己上传**的文件
-2. 打开链接解析时，README 明确声明：**仅供个人学习与处理自有内容，遵守各平台 ToS 与著作权法**
-3. **不提供托管 SaaS 版本**，避免重蹈同类产品的法律风险
-4. 主仓库 License：Apache-2.0；各平台 adapter 单独目录并附免责声明
-5. 仓库内**不得**出现任何平台的签名密钥、登录 Cookie
+| 层 | 文件数 | 说明 |
+|---|---|---|
+| API | 2 | routes + batch_routes |
+| 核心 | 8 | app/state/config/models/db/pipeline/batch/llm |
+| 能力层 | 13 | extractors(3) + media(2) + asr(5) + ocr(3) |
+| 导出 | 1 | 4 种格式 |
+| 前端 | 3 | html + css + js，无构建 |
+| 测试 | 5 | 89 个用例 |
+
+合计约 7400 行。
