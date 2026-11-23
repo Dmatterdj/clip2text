@@ -43,3 +43,5 @@ dist/
 # 测试产物
 /tmp-test/
 *.log
+tests/fixtures/*.wav
+tests/fixtures/
