@@ -358,3 +358,87 @@ PENDING ──► RUNNING ──► DONE      （全成功）
 
 - 时间戳精度：分片间用 `chunk.start` 平移，毫秒级误差会累加
 - 长内容耗时：127 分钟音频在 M4 上约 25 分钟（mlx + turbo）
+
+---
+
+## 11. 内容解析（长文本结构化总结）
+
+把 2 小时的转写文本变成「摘要 + 可跳转章节 + 要点 + 金句 + 实体」。
+与「AI 改写」的边界：改写是换一种说法，**解析只提取结构，不改写原文**。
+契约见 `docs/ANALYSIS-CONTRACT.md`。
+
+### 为什么必须 map-reduce
+
+3 万字一次性问模型，一是上下文放不下，二是模型会漏掉中段、时间戳乱编。
+所以先按时间/字符把文本切成若干窗口逐窗结构化（map），
+再把各窗的**摘要**（不是原文）拼起来做一次合并（reduce）。
+reduce 只看到摘要，token 成本可控。
+
+| 决策 | 理由 | 代价 |
+|---|---|---|
+| 12 分钟 **或** 6000 字先到者切窗 | 时间维度对齐播客节奏，字符维度防长句内容超长 | 两种预算都要测 |
+| 窗口上限 40，超了加倍预算重切 | 3 小时音频切 100 窗等于让用户多付 10 倍钱 | 单窗内容变长，可能质量下降 |
+| 窗口 > 20 时日志告警 | 用户看不见 token 消耗，至少运维/日志要留证据 | — |
+| 单窗 JSON 失败跳过，过半才整体失败 | 全盘失败会让已成功窗口的 token 白花 | 少量窗口静默丢失 |
+| quotes 只用 map 结果 | 原文经二次生成会失真，金句必须逐字 | reduce 不能润色金句 |
+| 章节时间戳用**该窗真实边界**回填 | 模型编的时间戳会跳到错误位置，跳转就失去意义 | reduce 必须输出 `window` 序号 |
+
+### 时间戳回填链路
+
+```
+分窗   Window(index=3, start=2157.0, end=2875.9, …)
+  ↓    map 提示词里给出「本段对应 35:57–47:55」
+模型   {"quotes":[{"text":"…","start":42.0}]}   ← 窗内相对秒数
+  ↓    start = window.start + 42.0
+结果   Quote(start=2199.0)                      ← 全局绝对秒数
+```
+
+`chapters` 同理：reduce 返回的 `window` 序号 → 该窗的 `start`/`end`。
+序号越界或重号一律丢弃，绝不用猜的位置生成假章节。
+
+### 一个 key 覆盖所有能力
+
+用户往往只配了 `DEEPSEEK_API_KEY`（ASR/OCR 已经在用）。
+如果解析非要再配一套 `LLM_BASE_URL`/`LLM_MODEL`，等于把产品承诺打破。
+所以 `resolve_analysis_llm()` 做兜底：
+
+| 配置情况 | 结果 | `capabilities.analysis.reason` |
+|---|---|---|
+| 有 `LLM_BASE_URL` + `LLM_MODEL` | 用用户指定的模型 | `null`（无需解释） |
+| 只有 `DEEPSEEK_API_KEY` | `deepseek-chat` + `DEEPSEEK_BASE_URL` | 说明「已自动复用 DEEPSEEK_API_KEY」 |
+| 都没有 | 不可用 | 说明两种配法任选其一 |
+
+### 成本可见
+
+`Analysis.token_usage = {prompt, completion} | None`：
+上游响应带 `usage` 就累加各次调用之和填上；不带就留 `None`，
+**不用估算值假装精确**。`windows` 也如实返回实际窗口数。
+
+### 存储与生命周期
+
+- 表 `analyses`：`task_id` 主键，一个任务只留一份，重新解析覆盖
+- 删除任务时**同一事务**里级联删除，避免 `DELETE /tasks` 后还能读到分析
+- 分析**脱离请求生命周期**跑：前端关掉页面不会让已付费的中间结果作废，
+  重新连上 `GET /analysis` 也能看到
+- 服务重启时 `analyses.state='RUNNING'` 一律标 `FAILED`（任务同理）
+
+### HTTP
+
+| 接口 | 行为 |
+|---|---|
+| `GET /api/v1/tasks/{id}/analysis` | 200 + Analysis；没有结果 → 404 |
+| `POST /api/v1/tasks/{id}/analyze` | 已有 SUCCESS 且 `force=false` → **不走 SSE**，直接 200 + JSON（避免重复烧 token） |
+| 同上，首次分析 | SSE：`progress(mapping)` → `progress(reducing)` → `result` / `error` |
+| 未配置模型 / 无文本 | 400，`detail` 说清怎么配 |
+| `GET /api/v1/capabilities` | 新增 `analysis: {available, reason, source, model}`，旧字段不变 |
+
+### 输出护栏
+
+模型输出失控会撑爆 UI，因此标题 40 字、摘要 200 字、全文摘要 600 字、
+要点 10 条、金句 6 条（每窗最多采 3 条）、实体 15 个，超出截断。
+
+### 已知限制
+
+- 章节粒度 = 窗口粒度：reduce 只能引用已有窗口，无法把一窗拆成多章
+- 窗口边界按分句切分，不保证落在语义边界上
+- 金句去重按「去空白后完全相同」，近义重复仍会保留

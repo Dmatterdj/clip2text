@@ -169,3 +169,41 @@ class EngineStatus(BaseModel):
     timestamps: bool = False
     max_chunk_sec: int | None = None
     detail: dict[str, Any] = Field(default_factory=dict)
+
+
+class Chapter(BaseModel):
+    """章节。start/end 是相对音频开头的秒数，前端靠它跳转。"""
+
+    start: float
+    end: float
+    title: str
+    summary: str = ""
+
+
+class Quote(BaseModel):
+    """值得摘录的原话。text 必须来自原文，不允许改写。"""
+
+    start: float
+    text: str
+    note: str | None = None
+
+
+class Analysis(BaseModel):
+    """一次内容解析（长文本结构化总结）的完整结果。"""
+
+    task_id: str
+    abstract: str = ""
+    chapters: list[Chapter] = Field(default_factory=list)
+    key_points: list[str] = Field(default_factory=list)
+    quotes: list[Quote] = Field(default_factory=list)
+    entities: list[str] = Field(default_factory=list)
+
+    language: str | None = None
+    model: str = ""
+    windows: int = 0
+    # 上游返回 usage 时填上，让用户知道一次分析花了多少 token；
+    # 不返回就留 None，不要用估算值假装精确。
+    token_usage: dict[str, int] | None = None
+    state: Literal["RUNNING", "SUCCESS", "FAILED"] = "SUCCESS"
+    error: str | None = None
+    created_at: datetime = Field(default_factory=utcnow)

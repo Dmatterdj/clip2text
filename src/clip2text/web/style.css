@@ -1079,6 +1079,18 @@ kbd {
   background: var(--accent-sel);
   box-shadow: inset 3px 0 0 var(--accent);
 }
+/* 从「解析」的时间戳跳过来的那一句：闪 2 秒，不用选中态免得和手动多选混淆。
+   底色写在基础规则上，动效只负责「亮一下再落下来」；
+   开了 prefers-reduced-motion 时动效被关掉，静态底色仍然在。 */
+.seg.flash {
+  background: var(--accent-sel);
+  box-shadow: inset 3px 0 0 var(--accent);
+  animation: segFlash 2s var(--ease);
+}
+@keyframes segFlash {
+  0% { background: var(--accent-soft); box-shadow: inset 2px 0 0 var(--accent-line); }
+  15% { background: var(--accent-sel); box-shadow: inset 3px 0 0 var(--accent); }
+}
 .seg-time {
   font: inherit;
   font-family: var(--font-mono);
@@ -1189,6 +1201,352 @@ kbd {
   color: var(--fg-dim);
   font-size: 13.5px;
 }
+
+/* ---------------------------------------------------------------- 解析 */
+/* 三万字播客的结构化概览：摘要 → 章节 → 要点 → 金句 → 实体。
+   章节和金句的时间戳都是按钮，点了切到「分句」并高亮对应那一句。 */
+
+.ana-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.ana-bar-main { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.ana-bar-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ana-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  font-weight: 560;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+.ana-state .dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: none;
+}
+.ana-state.ok { color: var(--ok); }
+.ana-state.err { color: var(--err); }
+.ana-state.run { color: var(--accent); }
+
+.ana-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin-bottom: 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-input);
+  background: var(--surface-2);
+}
+.ana-progress-text { font-variant-numeric: tabular-nums; }
+
+/* 「分析模型：DeepSeek 兜底 · deepseek-chat」这一类来源说明，尽量轻 */
+.ana-source {
+  font-size: 11.5px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+/* 长内容（20+ 章节）在面板内滚动，不把整页撑长 */
+.ana-body {
+  max-height: min(68vh, 720px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scroll-behavior: smooth;
+}
+.ana-body:focus-visible { outline-offset: -2px; }
+
+/* ---- 摘要：整页最突出的块 */
+.ana-abstract {
+  margin: 0 0 20px;
+  padding: 16px 18px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent-line);
+  border-radius: var(--r-input);
+  background: var(--surface-2);
+  font-size: 16px;
+  line-height: 1.95;
+  color: var(--fg);
+  letter-spacing: .007em;
+  overflow-wrap: anywhere;
+}
+.ana-abstract-label {
+  display: block;
+  margin-bottom: 7px;
+  font-size: 11px;
+  font-weight: 620;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+
+/* ---- 分区标题 */
+.ana-section { margin-bottom: 22px; }
+.ana-section:last-child { margin-bottom: 4px; }
+.ana-section-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.ana-section-head h3 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 620;
+  letter-spacing: .04em;
+  color: var(--fg-muted);
+}
+.ana-section-head .ico { width: 14px; height: 14px; color: var(--fg-dim); }
+.ana-count {
+  font-size: 11.5px;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- 时间戳：解析面板里唯一的「动作」入口 */
+.ana-time {
+  font: inherit;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+  color: var(--accent);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 2px 5px;
+  cursor: pointer;
+  white-space: nowrap;
+  flex: none;
+  transition: color .16s var(--ease), background .16s var(--ease), border-color .16s var(--ease);
+}
+.ana-time:hover {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+}
+.ana-time:active { transform: translateY(1px); }
+.ana-time .ico { width: 11px; height: 11px; }
+
+/* ---- 章节：左时间戳 / 右标题+摘要 */
+.ana-chapters {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--r-input);
+  background: var(--surface-2);
+  overflow: hidden;
+}
+.ana-chapter {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 14px;
+  align-items: start;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+  transition: background .14s var(--ease);
+}
+.ana-chapter:last-child { border-bottom: 0; }
+.ana-chapter:hover { background: var(--surface-3); }
+.ana-chapter .ana-time {
+  /* 和标题首行对齐，两栏看起来是一条横线 */
+  margin-top: 1px;
+  /* 用 muted 而不是 dim：dim 在 surface-2 上只有 4.25:1，不到 4.5 */
+  color: var(--fg-muted);
+}
+.ana-chapter:hover .ana-time { color: var(--accent); }
+.ana-chapter-main { min-width: 0; }
+.ana-chapter-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 580;
+  line-height: 1.55;
+  color: var(--fg);
+  overflow-wrap: anywhere;
+}
+.ana-chapter-summary {
+  margin: 4px 0 0;
+  font-size: 13px;
+  line-height: 1.75;
+  color: var(--fg-muted);
+  overflow-wrap: anywhere;
+}
+.ana-chapter-summary:empty { display: none; }
+
+/* ---- 要点 */
+.ana-points {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ana-point {
+  position: relative;
+  padding-left: 18px;
+  font-size: 13.5px;
+  line-height: 1.75;
+  color: var(--fg);
+  overflow-wrap: anywhere;
+}
+.ana-point::before {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: .72em;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+  opacity: .85;
+}
+
+/* ---- 金句 */
+.ana-quotes {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.ana-quote {
+  padding: 12px 14px 10px;
+  border: 1px solid var(--border);
+  border-left: 2px solid var(--accent-line);
+  border-radius: var(--r-input);
+  background: var(--surface-2);
+}
+.ana-quote-text {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.8;
+  color: var(--fg);
+  overflow-wrap: anywhere;
+}
+.ana-quote-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+.ana-quote-note {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--fg-muted);
+  overflow-wrap: anywhere;
+}
+.ana-quote-foot .ana-copy { margin-left: auto; }
+
+.ana-copy {
+  display: inline-grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  flex: none;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+  transition: color .16s var(--ease), background .16s var(--ease), border-color .16s var(--ease);
+}
+.ana-copy:hover { color: var(--fg); background: var(--surface); border-color: var(--border-2); }
+.ana-copy:active { transform: translateY(1px); }
+.ana-copy .ico { width: 13px; height: 13px; }
+.ana-copy.done { color: var(--ok); border-color: var(--accent-line); }
+
+/* ---- 实体 */
+.ana-entities {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.ana-entity {
+  display: inline-flex;
+  align-items: center;
+  font-size: 12.5px;
+  line-height: 1;
+  padding: 5px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--fg-muted);
+  overflow-wrap: anywhere;
+}
+
+/* ---- 空态 / 错误 / 进行中 */
+.ana-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 40px 20px 44px;
+  text-align: center;
+}
+.ana-empty .ico { width: 26px; height: 26px; color: var(--fg-dim); }
+.ana-empty-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 580;
+  color: var(--fg);
+}
+.ana-empty-text {
+  margin: 0;
+  max-width: 46ch;
+  font-size: 13px;
+  line-height: 1.8;
+  color: var(--fg-muted);
+}
+.ana-empty-actions { margin-top: 4px; display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
+
+.ana-error {
+  display: flex;
+  gap: 10px;
+  padding: 14px 16px;
+  border: 1px solid var(--err-soft);
+  border-radius: var(--r-input);
+  background: var(--err-soft);
+  color: var(--fg);
+  font-size: 13.5px;
+  line-height: 1.75;
+  overflow-wrap: anywhere;
+}
+.ana-error .ico { color: var(--err); margin-top: 3px; flex: none; }
+.ana-error b { color: var(--err); font-weight: 620; }
+
+.ana-foot {
+  margin-top: 18px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  font-size: 11.5px;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.ana-foot .sep { opacity: .6; }
+
 
 /* ---------------------------------------------------------------- 批量 */
 #batchPanel .panel-head { border-bottom: 1px solid var(--border); }
@@ -1501,6 +1859,36 @@ kbd {
   #refreshHistory { order: 4; }
   .batch-foot { padding: 12px 14px; }
   .batch-item { padding: 10px 14px; }
+
+  /* 解析：章节两栏在窄屏上收紧间距，别让时间戳把标题挤成一列字 */
+  .ana-body { max-height: none; }
+  .ana-abstract { padding: 14px 14px; font-size: 15.5px; line-height: 1.85; }
+  .ana-chapter { gap: 10px; padding: 11px 12px; }
+  .ana-chapter-title { font-size: 13.5px; }
+  .ana-quote { padding: 11px 12px 9px; }
+  .ana-bar { row-gap: 8px; }
+  .ana-bar-actions { width: 100%; }
+  .ana-bar-actions .btn { flex: 1 1 auto; justify-content: center; }
+}
+
+/* 手机竖屏：章节从「左时间戳 + 右内容」改成上下排，避免标题被压到 6 个字宽 */
+@media (max-width: 560px) {
+  .ana-chapter {
+    grid-template-columns: 1fr;
+    gap: 3px;
+    padding: 11px 12px;
+  }
+  .ana-chapter .ana-time {
+    justify-self: start;
+    margin-top: 0;
+    padding-left: 0;
+    padding-right: 0;
+    border-color: transparent;
+    background: transparent;
+  }
+  .ana-chapter-summary { font-size: 12.5px; line-height: 1.7; }
+  .ana-empty { padding: 30px 12px 34px; }
+  .ana-error { padding: 12px 13px; font-size: 13px; }
 }
 
 /* 尊重系统「减少动态效果」 */

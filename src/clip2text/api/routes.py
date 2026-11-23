@@ -14,7 +14,7 @@ import logging
 import shutil
 import uuid
 from pathlib import Path
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
 
 from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import Response, StreamingResponse
@@ -31,6 +31,9 @@ from ..ocr import ocr_statuses
 from ..pipeline import AUDIO_EXT, IMAGE_EXT, VIDEO_EXT, detect_work_type
 from ..state import get_state
 
+if TYPE_CHECKING:
+    from ..state import AppState
+
 log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1")
@@ -38,6 +41,22 @@ router = APIRouter(prefix="/api/v1")
 
 def _settings() -> Settings:
     return get_state().settings
+
+
+def _analysis_capability(st: AppState) -> dict[str, object]:
+    """内容解析能力上报。
+
+    与 rewrite 的区别：分析允许复用 DEEPSEEK_API_KEY 兜底，
+    所以「没有 LLM_* 也能 available=true」是正常的；
+    reason 里必须说清当前用的是哪个来源，否则用户会以为配置没生效。
+    """
+    llm = st.analysis_config()
+    return {
+        "available": llm.configured,
+        "reason": llm.reason,
+        "source": llm.source,
+        "model": llm.config.model if llm.config else None,
+    }
 
 
 # ---------------------------------------------------------------- capabilities
@@ -86,6 +105,7 @@ def capabilities() -> dict[str, object]:
             "available": st.llm.configured,
             "styles": [s["key"] for s in style_list()],
         },
+        "analysis": _analysis_capability(st),
         "exporters": list(SUPPORTED),
         "limits": {
             "max_upload_mb": settings.max_upload_mb,

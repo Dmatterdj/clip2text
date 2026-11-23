@@ -6,8 +6,9 @@
  *
  * 结构：
  *   1. 工具函数     2. 状态     3. 主题     4. 能力探测
- *   5. 输入与提交   6. 任务进度  7. 结果渲染  8. 搜索
- *   9. 改写         10. 批量     11. 历史     12. 命令面板
+ *   5. 输入与提交   6. 任务进度  7. 结果渲染  8. 搜索 / 导出
+ *   9. 改写         10. 内容解析 11. 批量     12. 历史
+ *   13. 命令面板
  * ========================================================================== */
 
 'use strict';
@@ -103,6 +104,21 @@ const state = {
   sel: new Set(),
   segDirty: true,
   rewriteText: '',
+  /* 内容解析：每个任务只有一份结果，后端会覆盖 */
+  analysis: null,
+  anaAvailable: false,
+  /* 当前面板展示的是哪个任务：同一个任务切回来不重复打接口 */
+  anaFor: null,
+  /* idle | loading | empty | running | done | error */
+  anaView: 'idle',
+  anaRunning: false,
+  /* 刚点过「重新解析」：这之后的一小段时间内读到 FAILED 不可信 */
+  anaJustForced: false,
+  /* 跳转序号：新的跳转让旧的「补正」回调自动失效 */
+  jumpSeq: 0,
+  settleTimer: null,
+  redoTimer: null,
+  hlTimer: null,
   batchId: null,
   batchTimer: null,
   batchTasks: [],
@@ -217,6 +233,40 @@ function autosize(ta) {
   ta.style.height = Math.min(ta.scrollHeight, 240) + 'px';
 }
 
+/*
+ * POST 请求拿到的 text/event-stream 不能用 EventSource（它只发 GET），
+ * 所以手写一个最小解析器：按空行切块，每块取 event: 和 data:。
+ * 改写和解析共用这一份，避免两处各写一遍再各自长歪。
+ *
+ * onEvent(ev, payload) 抛异常 = 中断并把异常抛给调用方；
+ * 返回 'stop' = 主动结束读取（已经拿到结果，不用再等）。
+ */
+async function readSSE(res, onEvent) {
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    const blocks = buf.split('\n\n');
+    buf = blocks.pop() || '';
+
+    for (const block of blocks) {
+      const evMatch = block.match(/^event:\s*(\w+)/m);
+      const dataMatch = block.match(/^data:\s*(.*)$/m);
+      if (!dataMatch) continue;
+      let payload;
+      try { payload = JSON.parse(dataMatch[1]); } catch { continue; }
+      const ev = evMatch ? evMatch[1] : 'message';
+      const verdict = await onEvent(ev, payload);
+      if (verdict === 'stop') return 'stopped';
+    }
+  }
+  return 'done';
+}
+
 /* 从一段文本里抠链接：支持直接粘 URL，也支持「【标题】 https://…」这种分享文案。 */
 function extractUrls(text) {
   const raw = String(text || '');
@@ -302,6 +352,9 @@ function renderCaps(caps) {
 
   if (caps.rewrite && caps.rewrite.available) pills.push(pill('AI 改写', 'ok'));
 
+  /* 解析和改写共用一套 LLM 配置，但后端有独立开关，按它自己的字段判断 */
+  if (caps.analysis && caps.analysis.available) pills.push(pill('内容解析', 'ok'));
+
   box.innerHTML = pills.join('');
 }
 
@@ -382,6 +435,33 @@ function ffReady(caps) {
   return !!(caps && caps.ffmpeg && caps.ffmpeg.available);
 }
 
+/* 解析和改写虽然是同一套 LLM 配置，但后端把它们拆成两个字段上报：
+   契约里写的是 capabilities.analysis = {available, reason, source, model}。
+   字段缺失（后端还是旧版本）一律当不可用，宁可少一个 tab 也不要点了报错。
+
+   ⚠ 只认 available，不要自己去看 LLM_BASE_URL / caps.rewrite：
+   后端支持 DeepSeek 兜底（只配 DEEPSEEK_API_KEY 也算可用），
+   前端再去猜配置会让这批用户看不到功能。 */
+function analysisAvailable(caps) {
+  const c = caps || state.caps;
+  return !!(c && c.analysis && c.analysis.available);
+}
+
+function analysisReason(caps) {
+  const c = caps || state.caps;
+  return (c && c.analysis && c.analysis.reason) || '未配置 LLM（LLM_BASE_URL / LLM_MODEL 或 DEEPSEEK_API_KEY）';
+}
+
+/* 当前用哪个模型在分析：llm = 自建/兼容端点，deepseek = 兜底 */
+function analysisSourceLabel(caps) {
+  const a = (caps || state.caps || {}).analysis;
+  if (!a) return '';
+  const model = a.model || '';
+  if (a.source === 'deepseek') return model ? `DeepSeek 兜底 · ${model}` : 'DeepSeek 兜底';
+  if (a.source === 'llm') return model ? `自配模型 · ${model}` : '自配模型';
+  return model ? `模型 ${model}` : '';
+}
+
 async function loadCapabilities() {
   try {
     const caps = await api('/capabilities');
@@ -416,6 +496,12 @@ async function loadCapabilities() {
       $('#rewriteTab').hidden = false;
       await loadStyles();
     }
+
+    /* 解析同理。载荷里没有 analysis 字段（旧后端）时也隐藏。 */
+    state.anaAvailable = analysisAvailable(caps);
+    $('#analysisTab').hidden = !state.anaAvailable;
+    /* 后端说不可用时，如果用户正好停在解析 tab，退到正文，别留一个空面板 */
+    if (!state.anaAvailable && state.tab === 'analysis') setTab('text');
   } catch (err) {
     $('#caps').innerHTML = pill('能力探测失败', 'bad', err.message);
     toast('无法读取本机能力：' + err.message, 'err');
@@ -954,9 +1040,12 @@ function setTab(name) {
     const on = t.dataset.tab === name;
     t.classList.toggle('on', on);
     t.setAttribute('aria-selected', String(on));
+    /* roving tabindex：只有选中的 tab 在 Tab 键序列里 */
+    t.tabIndex = on ? 0 : -1;
   });
   $('#panelText').hidden = name !== 'text';
   $('#panelSegments').hidden = name !== 'segments';
+  $('#panelAnalysis').hidden = name !== 'analysis';
   $('#panelRewrite').hidden = name !== 'rewrite';
 
   if (name === 'segments') {
@@ -968,11 +1057,9 @@ function setTab(name) {
     }
   }
   if (name === 'text') renderDoc();
-  if (name === 'rewrite') {
-    $('#searchBox').style.visibility = 'hidden';
-  } else {
-    $('#searchBox').style.visibility = '';
-  }
+  if (name === 'analysis') openAnalysis();
+  /* 搜索只作用于正文和分句：改写结果和解析结果都不是「原文子串」，留着搜索框是误导 */
+  $('#searchBox').style.visibility = (name === 'rewrite' || name === 'analysis') ? 'hidden' : '';
 }
 
 function renderResult(task) {
@@ -1016,6 +1103,19 @@ function renderResult(task) {
   $('#rewriteOutput').textContent = '';
   $('#rewriteStatus').textContent = '';
   $('#rewriteCount').textContent = '';
+
+  // 解析同样要清：不同任务的摘要/章节混在一起是最糟的错误
+  state.analysis = null;
+  state.anaFor = null;
+  state.anaRunning = false;
+  state.anaView = 'idle';
+  $('#anaBody').innerHTML = '';
+  $('#anaState').className = 'ana-state';
+  $('#anaState').textContent = '－';
+  $('#anaMeta').textContent = '';
+  showAnaProgress(false);
+  anaButtons(false, false);
+  $('#anaRedo').dataset.armed = '';
 
   setTab('text');
   $('#resultPanel').scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -1164,39 +1264,20 @@ async function doRewrite() {
       throw new Error(detail);
     }
 
-    // POST + SSE 不能用 EventSource，手写一个最小解析器
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buf = '';
+    // POST + SSE 不能用 EventSource，走公共解析器
     let finished = false;
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += decoder.decode(value, { stream: true });
-      const blocks = buf.split('\n\n');
-      buf = blocks.pop() || '';
-
-      for (const block of blocks) {
-        const evMatch = block.match(/^event:\s*(\w+)/m);
-        const dataMatch = block.match(/^data:\s*(.*)$/m);
-        if (!dataMatch) continue;
-        let payload;
-        try { payload = JSON.parse(dataMatch[1]); } catch { continue; }
-        const ev = evMatch ? evMatch[1] : 'message';
-
-        if (ev === 'delta' && payload.text) {
-          state.rewriteText += payload.text;
-          out.textContent = state.rewriteText;
-          out.scrollTop = out.scrollHeight;
-          $('#rewriteCount').textContent = `${state.rewriteText.length.toLocaleString('zh-CN')} 字`;
-        } else if (ev === 'error') {
-          throw new Error(payload.detail || '改写失败');
-        } else if (ev === 'done') {
-          finished = true;
-        }
+    await readSSE(res, (ev, payload) => {
+      if (ev === 'delta' && payload.text) {
+        state.rewriteText += payload.text;
+        out.textContent = state.rewriteText;
+        out.scrollTop = out.scrollHeight;
+        $('#rewriteCount').textContent = `${state.rewriteText.length.toLocaleString('zh-CN')} 字`;
+      } else if (ev === 'error') {
+        throw new Error(payload.detail || '改写失败');
+      } else if (ev === 'done') {
+        finished = true;
       }
-    }
+    });
 
     status.textContent = finished ? '完成' : '结束';
     status.className = 'hint';
@@ -1211,7 +1292,559 @@ async function doRewrite() {
   }
 }
 
-/* ------------------------------------------------------------ 10. 批量 */
+/* ------------------------------------------------------------ 10. 内容解析 */
+
+/*
+ * 「解析」= 把长转写提取成结构（摘要 / 章节 / 要点 / 金句 / 实体），不重写原文。
+ * 与「改写」的区别是**必须带时间戳**，且时间戳点了要能跳回分句里那一句 ——
+ * 两小时播客几十万字，用户真正要的是「跳到 01:12:30 那儿听」。
+ */
+
+/* 解析面板顶部的状态行。kind: run / ok / err */
+function anaBar(kind, label, meta) {
+  const el = $('#anaState');
+  el.className = 'ana-state' + (kind ? ' ' + kind : '');
+  el.innerHTML = `<span class="dot" aria-hidden="true"></span>${esc(label)}`;
+  $('#anaMeta').textContent = meta || '';
+}
+
+/* 面板固定展示「这份结果是谁分析的」，source/model 来自 capabilities.analysis */
+function anaSourceLine() {
+  const el = $('#anaSource');
+  if (!el) return;
+  const text = analysisSourceLabel();
+  el.textContent = text ? `分析模型：${text}` : '';
+  el.hidden = !text;
+}
+
+function anaButtons(running, hasResult) {
+  const redo = $('#anaRedo');
+  redo.hidden = !hasResult || !state.anaAvailable;
+  redo.disabled = running;
+  if (!running && redo.dataset.armed !== '1') {
+    redo.innerHTML = '<svg class="ico" aria-hidden="true"><use href="#i-refresh"></use></svg>重新解析';
+  }
+  $('#anaCopyAll').hidden = !hasResult;
+}
+
+function setAnaView(view) {
+  state.anaView = view;
+  anaButtons(view === 'running', ['done', 'running', 'error'].includes(view));
+}
+
+function showAnaProgress(on, pct, text) {
+  $('#anaProgress').hidden = !on;
+  if (!on) return;
+  const p = Math.max(0, Math.min(100, Math.round(pct)));
+  $('#anaBar').style.width = p + '%';
+  $('#anaProgressBar').setAttribute('aria-valuenow', String(p));
+  $('#anaProgressText').textContent = text || '';
+}
+
+function anaHead(icon, title, count) {
+  return `<div class="ana-section-head">
+    <svg class="ico" aria-hidden="true"><use href="#i-${icon}"></use></svg>
+    <h3>${esc(title)}</h3>${count != null ? `<span class="ana-count">${esc(count)}</span>` : ''}
+  </div>`;
+}
+
+/* 时间戳按钮：解析面板里唯一有副作用的控件，可访问性必须到位 */
+function anaTimeBtn(seconds, title) {
+  const t = Number(seconds) || 0;
+  return `<button class="ana-time" type="button" data-jump="${t}"
+    title="${esc(title || '跳到这句')}" aria-label="跳到 ${fmtClock(t)} 这一句">${fmtClock(t)}</button>`;
+}
+
+function renderAnalysisEmpty() {
+  anaBar('', '尚未解析');
+  anaButtons(false, false);
+  showAnaProgress(false);
+  $('#anaBody').innerHTML = `<div class="ana-empty">
+    <svg class="ico" aria-hidden="true"><use href="#i-scan"></use></svg>
+    <p class="ana-empty-title">还没有解析结果</p>
+    <p class="ana-empty-text">
+      解析会把这份转写交给大模型，提取一句话摘要、带时间戳的章节、关键要点和金句。
+      章节与金句的时间戳可以直接点，跳回对应的分句位置。
+      <br>两小时播客、三万字的稿子要分窗处理，可能要等几十秒到两三分钟。
+    </p>
+    <div class="ana-empty-actions">
+      <button class="btn btn-primary" type="button" data-ana-start="1">
+        <svg class="ico" aria-hidden="true"><use href="#i-scan"></use></svg>开始解析
+      </button>
+    </div>
+  </div>`;
+}
+
+function renderAnalysisError(msg, canRetry) {
+  anaBar('err', '解析失败', '');
+  /* 只有确实有旧结果时顶部才给「重新解析」；否则靠正文里的「重试」，
+     两个按钮做同一件事会让人以为有区别 */
+  anaButtons(false, !!state.analysis);
+  showAnaProgress(false);
+  $('#anaBody').innerHTML = `<div class="ana-error">
+    <svg class="ico" aria-hidden="true"><use href="#i-alert"></use></svg>
+    <div><b>解析没有完成。</b>${esc(msg || '没有拿到原因')}</div>
+  </div>
+  ${canRetry === false ? '' : `<div class="ana-empty-actions" style="margin-top:14px">
+      <button class="btn btn-quiet btn-sm" type="button" data-ana-start="1">
+        <svg class="ico" aria-hidden="true"><use href="#i-refresh"></use></svg>重试
+      </button>
+    </div>`}`;
+}
+
+function renderAnalysisFailed(a) {
+  renderAnalysisError(a.error || '上一次解析失败了', true);
+  anaBar('err', '解析失败', a.model ? `模型 ${a.model}` : '');
+}
+
+/* 把契约 §2 的 Analysis 渲染成卡片 */
+function renderAnalysis(a) {
+  const data = a || {};
+  const chapters = Array.isArray(data.chapters) ? data.chapters : [];
+  const points = Array.isArray(data.key_points) ? data.key_points : [];
+  const quotes = Array.isArray(data.quotes) ? data.quotes : [];
+  const entities = Array.isArray(data.entities) ? data.entities : [];
+
+  const stamp = fmtWhen(data.created_at);
+  const metaBits = [];
+  if (data.model) metaBits.push(data.model);
+  if (data.windows) metaBits.push(`${data.windows} 窗`);
+  if (stamp) metaBits.push(stamp);
+  anaBar('ok', '已解析', metaBits.join(' · '));
+  anaButtons(false, true);
+  showAnaProgress(false);
+
+  const parts = [];
+
+  if (data.abstract) {
+    parts.push(`<p class="ana-abstract"><span class="ana-abstract-label">摘要</span>${esc(data.abstract)}</p>`);
+  }
+
+  if (chapters.length) {
+    const rows = chapters.map((c) => {
+      const start = Number(c.start) || 0;
+      const end = Number(c.end) || 0;
+      const range = end > start ? `${fmtClock(start)} – ${fmtClock(end)}` : fmtClock(start);
+      return `<li class="ana-chapter">
+        ${anaTimeBtn(start, `跳到 ${range}`)}
+        <div class="ana-chapter-main">
+          <p class="ana-chapter-title">${esc(c.title || '（无标题）')}</p>
+          ${c.summary ? `<p class="ana-chapter-summary">${esc(c.summary)}</p>` : ''}
+        </div>
+      </li>`;
+    }).join('');
+    parts.push(`<section class="ana-section">
+      ${anaHead('list', '章节', chapters.length)}
+      <ol class="ana-chapters">${rows}</ol>
+    </section>`);
+  }
+
+  if (points.length) {
+    parts.push(`<section class="ana-section">
+      ${anaHead('check', '关键要点', points.length)}
+      <ul class="ana-points">${points.map((p) => `<li class="ana-point">${esc(p)}</li>`).join('')}</ul>
+    </section>`);
+  }
+
+  if (quotes.length) {
+    const rows = quotes.map((q, i) => {
+      const start = Number(q.start) || 0;
+      return `<li class="ana-quote">
+        <p class="ana-quote-text">“${esc(q.text || '')}”</p>
+        <div class="ana-quote-foot">
+          ${anaTimeBtn(start, `跳到这句原话（${fmtClock(start)}）`)}
+          ${q.note ? `<span class="ana-quote-note">${esc(q.note)}</span>` : '<span class="ana-quote-note"></span>'}
+          <button class="ana-copy" type="button" data-copy-quote="${i}"
+            title="复制这句原话" aria-label="复制这句原话">
+            <svg class="ico" aria-hidden="true"><use href="#i-copy"></use></svg>
+          </button>
+        </div>
+      </li>`;
+    }).join('');
+    parts.push(`<section class="ana-section">
+      ${anaHead('quote', '金句', quotes.length)}
+      <ul class="ana-quotes">${rows}</ul>
+    </section>`);
+  }
+
+  if (entities.length) {
+    parts.push(`<section class="ana-section">
+      ${anaHead('tag', '实体', entities.length)}
+      <ul class="ana-entities">${entities.map((e) => `<li class="ana-entity">${esc(e)}</li>`).join('')}</ul>
+    </section>`);
+  }
+
+  if (!parts.length) {
+    renderAnalysisError('模型返回了结果，但里面没有任何可展示的内容。', true);
+    return;
+  }
+
+  const foot = [];
+  if (data.language) foot.push(`语言 ${data.language}`);
+  if (data.token_usage && (data.token_usage.prompt || data.token_usage.completion)) {
+    const total = (Number(data.token_usage.prompt) || 0) + (Number(data.token_usage.completion) || 0);
+    foot.push(`${total.toLocaleString('zh-CN')} tokens`);
+  }
+  if (data.windows) foot.push(`分 ${data.windows} 窗解析`);
+  if (foot.length) {
+    parts.push(`<div class="ana-foot">${foot.map(esc).join('<span class="sep">·</span>')}</div>`);
+  }
+
+  $('#anaBody').innerHTML = parts.join('');
+  $('#anaBody').scrollTop = 0;
+}
+
+/* 打开解析 tab 时拉一次已有结果；同一个任务不重复打接口 */
+async function openAnalysis() {
+  if (!state.anaAvailable) return;
+  const id = state.taskId;
+  if (!id) return;
+  anaSourceLine();
+  if (state.anaFor === id && state.anaView !== 'idle') return;
+  state.anaFor = id;
+  await loadAnalysis(id);
+}
+
+async function loadAnalysis(id, attempt) {
+  const taskId = id || state.taskId;
+  if (!taskId) return;
+  const tries = attempt || 0;
+
+  anaBar('', '读取中…', '');
+  anaButtons(false, false);
+  showAnaProgress(false);
+  $('#anaBody').innerHTML = '<div class="ana-empty"><p class="ana-empty-text">正在读取已有解析…</p></div>';
+
+  try {
+    const res = await fetch(`${API}/tasks/${taskId}/analysis`);
+    if (state.taskId !== taskId) return; // 期间切了任务
+
+    /* 404 = 还没解析过，这是正常路径，不是错误 */
+    if (res.status === 404) {
+      state.analysis = null;
+      renderAnalysisEmpty();
+      setAnaView('empty');
+      return;
+    }
+    if (!res.ok) {
+      let detail = `读取失败（HTTP ${res.status}）`;
+      try { detail = (await res.json()).detail || detail; } catch { /* 忽略 */ }
+      throw new Error(detail);
+    }
+
+    const data = await res.json();
+    if (state.taskId !== taskId) return;
+
+    /*
+     * 重新解析会把旧记录短暂置为 FAILED 再覆盖（后端要先落一个状态，
+     * 否则中途崩掉会留下一个看不出问题的旧结果）。这个窗口非常短，
+     * 读到 FAILED 不代表真的失败 —— 隔一下重读，别给用户弹一个假错误。
+     */
+    if (data.state === 'FAILED' && tries < 2 && (state.anaRunning || state.anaJustForced)) {
+      await new Promise((r) => setTimeout(r, 700));
+      if (state.taskId !== taskId) return;
+      return loadAnalysis(taskId, tries + 1);
+    }
+
+    state.analysis = data;
+    if (data.state === 'FAILED') {
+      renderAnalysisFailed(data);
+      setAnaView('error');
+    } else {
+      renderAnalysis(data);
+      setAnaView('done');
+    }
+  } catch (err) {
+    if (state.taskId !== taskId) return;
+    renderAnalysisError(err.message);
+    setAnaView('error');
+  }
+}
+
+/* 进度条百分比：后端只给 done/total，这里把两个阶段摊到 0-100 上，
+   否则 reducing 一开始会从 0% 重来，看起来像失败重跑。 */
+function anaPct(phase, done, total) {
+  const d = Number(done) || 0;
+  const t = Number(total) || 0;
+  const ratio = t > 0 ? Math.max(0, Math.min(1, d / t)) : 0;
+  if (phase === 'reducing') return 90 + ratio * 9;
+  if (phase === 'done') return 100;
+  return ratio * 90;
+}
+
+async function startAnalyze(force) {
+  const id = state.taskId;
+  if (!id) { toast('没有可解析的任务'); return; }
+  if (state.anaRunning) return;
+  if (!state.anaAvailable) { toast(analysisReason(), 'err'); return; }
+
+  state.anaRunning = true;
+  state.anaFor = id;
+  state.anaJustForced = !!force;
+  setAnaView('running');
+  anaBar('run', '解析中…', '');
+  anaSourceLine();
+  showAnaProgress(true, 0, '正在连接模型…');
+  $('#anaBody').innerHTML = '<div class="ana-empty"><p class="ana-empty-text">正在分析，长内容要分窗处理，请稍候…</p></div>';
+
+  let gotResult = false;
+
+  try {
+    const res = await fetch(`${API}/tasks/${id}/analyze`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ force: !!force }),
+    });
+
+    if (!res.ok) {
+      let detail = `请求失败（HTTP ${res.status}）`;
+      try { detail = (await res.json()).detail || detail; } catch { /* 忽略 */ }
+      throw new Error(detail);
+    }
+
+    /* 契约 5.1：已有结果且 force=false 时后端直接回 JSON，不发 SSE */
+    const ctype = res.headers.get('content-type') || '';
+    if (ctype.includes('application/json')) {
+      const data = await res.json();
+      if (state.taskId !== id) return;
+      state.analysis = data;
+      renderAnalysis(data);
+      setAnaView('done');
+      toast('已有解析结果');
+      return;
+    }
+
+    await readSSE(res, (ev, payload) => {
+      if (state.taskId !== id) return 'stop'; // 用户切走了，别再改 DOM
+
+      if (ev === 'progress') {
+        const phase = payload.phase || 'mapping';
+        const done = Number(payload.done) || 0;
+        const total = Number(payload.total) || 0;
+        /*
+         * 后端 message 是最具体的（「正在分析第 6/8 段」），优先用它。
+         * 不要再拼一句自己算的「正在分析 5/8 段」—— done 是「已完成数」，
+         * 和 message 里的「第 6 段」并排会出现 5/8 与 6/8 打架的观感。
+         */
+        let label = payload.message;
+        if (!label) {
+          if (phase === 'reducing') label = '正在汇总';
+          else if (total) label = `正在分析 ${done}/${total} 段`;
+          else label = '正在分析';
+        }
+        showAnaProgress(true, anaPct(phase, done, total), label);
+        anaBar('run', '解析中…', total ? `${done}/${total}` : '');
+      } else if (ev === 'result') {
+        gotResult = true;
+        state.analysis = payload;
+        if (payload && payload.state === 'FAILED') {
+          renderAnalysisFailed(payload);
+          setAnaView('error');
+        } else {
+          renderAnalysis(payload);
+          setAnaView('done');
+        }
+      } else if (ev === 'error') {
+        throw new Error(payload.detail || '解析失败');
+      }
+      return undefined;
+    });
+
+    if (state.taskId !== id) return;
+    if (gotResult) {
+      showAnaProgress(true, 100, '完成');
+      setTimeout(() => {
+        if (state.anaRunning) return;
+        showAnaProgress(false);
+      }, 900);
+      toast('解析完成');
+    } else {
+      throw new Error('连接结束了，但没有收到解析结果');
+    }
+  } catch (err) {
+    if (state.taskId !== id) return;
+    renderAnalysisError(err.message);
+    setAnaView('error');
+    toast(err.message, 'err');
+  } finally {
+    if (state.taskId === id) {
+      state.anaRunning = false;
+      anaButtons(false, !!state.analysis);
+      if (!gotResult) showAnaProgress(false);
+    }
+    /* 结果一落地，那个「FAILED 短暂窗口」就结束了 */
+    setTimeout(() => { state.anaJustForced = false; }, 1200);
+  }
+}
+
+/* 「重新解析」二次确认：沿用删除任务那套「点一次变成确认」的做法，
+   不用 confirm()（原生弹窗会阻塞页面，也不能定制样式）。 */
+let anaRedoOriginal = '';
+
+function armReanalyze(btn) {
+  if (!btn || state.anaRunning) return;
+  if (btn.dataset.armed === '1') {
+    btn.dataset.armed = '';
+    btn.classList.remove('btn-danger');
+    btn.innerHTML = anaRedoOriginal || '重新解析';
+    startAnalyze(true);
+    return;
+  }
+  anaRedoOriginal = btn.innerHTML;
+  btn.dataset.armed = '1';
+  btn.classList.add('btn-danger');
+  btn.innerHTML = '<span style="font-size:11.5px">确认重新解析</span>';
+  btn.title = '再点一次会覆盖当前结果，并重新调用模型';
+  clearTimeout(state.redoTimer);
+  state.redoTimer = setTimeout(() => {
+    if (!btn.isConnected || btn.dataset.armed !== '1') return;
+    btn.innerHTML = anaRedoOriginal || '重新解析';
+    btn.classList.remove('btn-danger');
+    btn.dataset.armed = '';
+    btn.title = '重新解析（会调用模型，覆盖当前结果）';
+  }, 3200);
+}
+
+/*
+ * 把某一行滚到分句列表的中间。
+ *
+ * 不能只算一次 scrollTop：.seg 有 content-visibility:auto，屏幕外的行按
+ * contain-intrinsic-size 的 46px 估算，一旦滚过去，真实高度替换估算值，
+ * 总高度和偏移都会变 —— 一次到位的计算会落在错的地方。
+ * 所以按「量→挪→重量」迭代收敛，每次 getBoundingClientRect 都强制重排。
+ */
+function centerRowInList(list, row) {
+  for (let i = 0; i < 12; i += 1) {
+    const lr = list.getBoundingClientRect();
+    const rr = row.getBoundingClientRect();
+    const delta = (rr.top - lr.top) - (list.clientHeight / 2) + (rr.height / 2);
+    if (Math.abs(delta) < 2) return true;
+    const max = Math.max(0, list.scrollHeight - list.clientHeight);
+    const next = Math.max(0, Math.min(max, list.scrollTop + delta));
+    if (next === list.scrollTop) return false; // 到底了，挪不动
+    list.scrollTop = next;
+  }
+  return false;
+}
+
+/*
+ * 定位之后还得「跟一下」。
+ *
+ * 实测：某些情况下（尤其是刚从别的 tab 切过来）浏览器会在下一帧才把
+ * content-visibility 的估算高度换成真实高度，导致已经居中的行又漂走几十到几百像素。
+ * 所以在随后几帧和稍晚一点各补一次居中；用户一旦自己滚动就立刻停手。
+ */
+function settleRowCenter(list, row) {
+  const token = (state.jumpSeq = (state.jumpSeq || 0) + 1);
+  const mine = token;
+  let userScrolled = false;
+  const onUserScroll = () => { userScrolled = true; };
+  list.addEventListener('wheel', onUserScroll, { passive: true, once: true });
+  list.addEventListener('touchstart', onUserScroll, { passive: true, once: true });
+
+  const refit = () => {
+    if (mine !== state.jumpSeq) return; // 又跳了一次，交给新的那次
+    if (userScrolled) return;
+    if (!row.isConnected) return;
+    centerRowInList(list, row);
+  };
+
+  requestAnimationFrame(() => {
+    refit();
+    requestAnimationFrame(refit);
+  });
+  clearTimeout(state.settleTimer);
+  state.settleTimer = setTimeout(refit, 120);
+  setTimeout(refit, 360);
+}
+
+/*
+ * 时间戳跳转 —— 这是整个功能的核心。
+ * 难点：分句是分批增量渲染的（每批 SEG_CHUNK 条），两小时播客有几千句，
+ * 目标句很可能还没进 DOM，所以必须先把列表补渲染到目标行再滚动。
+ */
+function revealSegmentAt(seconds) {
+  const t = Math.max(0, Number(seconds) || 0);
+  const all = state.segAll;
+
+  if (!all || !all.length) {
+    toast('这个任务没有带时间戳的分句，跳不过去', 'err');
+    return;
+  }
+
+  /* 搜索态下列表里只有命中的句子，目标句大概率不在，先清掉筛选 */
+  if (state.query) {
+    state.query = '';
+    $('#searchInput').value = '';
+    setSearchCount('', false);
+  }
+
+  /* 先切 tab 再重建列表：面板不可见时量出来的高度全是 0 */
+  setTab('segments');
+  state.segDirty = false;
+  renderSegments();
+
+  /* 找「这个时刻正在播的那一句」：第一条 end 越过 t 的分句 */
+  let idx = all.findIndex((s) => (Number(s.end) || 0) > t);
+  if (idx < 0) idx = all.length - 1;
+
+  /* 补渲染：appendSegChunk 一次 SEG_CHUNK 条，循环到目标行出现为止 */
+  let guard = 0;
+  while (state.segRendered <= idx && guard < 500) {
+    appendSegChunk();
+    guard += 1;
+  }
+
+  const row = $(`#segList .seg[data-k="${idx}"]`);
+  if (!row) {
+    toast('没找到对应的分句', 'err');
+    return;
+  }
+
+  /* 只滚分句那个内层容器：用 scrollIntoView 会把整页一起滚走 */
+  const list = $('#segList');
+  centerRowInList(list, row);
+  settleRowCenter(list, row);
+
+  /* 高亮 2 秒，够看清是哪一句 */
+  list.querySelectorAll('.seg.flash').forEach((el) => el.classList.remove('flash'));
+  row.classList.add('flash');
+  clearTimeout(state.hlTimer);
+  state.hlTimer = setTimeout(() => row.classList.remove('flash'), 2000);
+
+  const s = all[idx];
+  toast(`已跳到 ${fmtClock(s.start)}`);
+}
+
+/* 把整份解析导成 Markdown，方便用户粘进笔记 */
+function analysisMarkdown() {
+  const a = state.analysis;
+  if (!a) return '';
+  const out = [];
+  if (a.abstract) out.push(`## 摘要\n\n${a.abstract}`);
+  const chapters = Array.isArray(a.chapters) ? a.chapters : [];
+  if (chapters.length) {
+    out.push('## 章节');
+    for (const c of chapters) {
+      out.push(`- **[${fmtClock(c.start)}]** ${c.title || ''}${c.summary ? `\n  ${c.summary}` : ''}`);
+    }
+  }
+  const points = Array.isArray(a.key_points) ? a.key_points : [];
+  if (points.length) {
+    out.push('## 关键要点');
+    for (const p of points) out.push(`- ${p}`);
+  }
+  const quotes = Array.isArray(a.quotes) ? a.quotes : [];
+  if (quotes.length) {
+    out.push('## 金句');
+    for (const q of quotes) out.push(`> ${q.text}${q.note ? `\n>\n> —— ${q.note}` : ''}\n\n时间 ${fmtClock(q.start)}`);
+  }
+  const entities = Array.isArray(a.entities) ? a.entities : [];
+  if (entities.length) out.push(`## 实体\n\n${entities.join(' · ')}`);
+  return out.join('\n\n');
+}
+
+/* ------------------------------------------------------------ 11. 批量 */
 
 async function startBatch() {
   const text = $('#batchInput').value.trim();
@@ -1369,7 +2002,7 @@ async function batchExport(format) {
   toast(`已导出 ${ok.length} 条`);
 }
 
-/* ------------------------------------------------------------ 11. 历史 */
+/* ------------------------------------------------------------ 12. 历史 */
 
 function histItemHtml(t) {
   const name = t.title || (t.source_value || '').replace(/^.*\//, '') || t.id.slice(0, 8);
@@ -1480,7 +2113,7 @@ async function deleteTask(id) {
   }
 }
 
-/* -------------------------------------------------------- 12. 命令面板 */
+/* -------------------------------------------------------- 13. 命令面板 */
 
 const COMMANDS = [
   {
@@ -1789,6 +2422,59 @@ function bind() {
     toast(ok ? '已复制改写结果' : '复制失败', ok ? '' : 'err');
   });
 
+  // ---- 解析
+  // 面板里的按钮是渲染时生成的，用事件委托，避免每次重渲染都要重新绑
+  const anaBody = $('#anaBody');
+  anaBody.addEventListener('click', async (e) => {
+    const startBtn = e.target.closest('[data-ana-start]');
+    if (startBtn) {
+      startBtn.disabled = true;
+      startAnalyze(false);
+      return;
+    }
+
+    /* 时间戳：核心交互，跳到分句并高亮 */
+    const jumpBtn = e.target.closest('[data-jump]');
+    if (jumpBtn) {
+      revealSegmentAt(jumpBtn.dataset.jump);
+      return;
+    }
+
+    /* 金句复制 */
+    const copyBtn = e.target.closest('[data-copy-quote]');
+    if (copyBtn) {
+      const q = (state.analysis && state.analysis.quotes) || [];
+      const item = q[Number(copyBtn.dataset.copyQuote)];
+      if (!item) return;
+      const ok = await copy(item.text || '');
+      if (ok) {
+        copyBtn.classList.add('done');
+        setTimeout(() => copyBtn.classList.remove('done'), 1600);
+      }
+      toast(ok ? '已复制这句原话' : '复制失败', ok ? '' : 'err');
+    }
+  });
+
+  $('#anaRedo').addEventListener('click', () => armReanalyze($('#anaRedo')));
+  $('#anaCopyAll').addEventListener('click', async () => {
+    const md = analysisMarkdown();
+    if (!md) { toast('还没有解析结果'); return; }
+    const ok = await copy(md);
+    toast(ok ? '已复制解析结果' : '复制失败', ok ? '' : 'err');
+  });
+
+  // tab 键盘导航：左右箭头在 tab 之间移动（ARIA tablist 的标准行为）
+  $('.tabs').addEventListener('keydown', (e) => {
+    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+    const tabs = $$('.tab').filter((t) => !t.hidden);
+    const cur = tabs.indexOf(document.activeElement);
+    if (cur < 0) return;
+    e.preventDefault();
+    const next = tabs[(cur + (e.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length];
+    next.focus();
+    setTab(next.dataset.tab);
+  });
+
   // ---- 批量
   $('#batchList').addEventListener('click', (e) => {
     const openBtn = e.target.closest('[data-open]');
@@ -1910,6 +2596,8 @@ function bind() {
 function init() {
   syncThemeBtn();
   bind();
+  // tablist 的 roving tabindex 初值：只有「正文」在 Tab 序列里
+  $$('.tab').forEach((t) => { t.tabIndex = t.classList.contains('on') ? 0 : -1; });
   autosize($('#urlInput'));
   $('#urlInput').focus();
   loadCapabilities();

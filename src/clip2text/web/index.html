@@ -46,6 +46,9 @@
     <symbol id="i-alert" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 7.8v4.6"/><path d="M12 16h.01"/></symbol>
     <symbol id="i-list" viewBox="0 0 24 24"><path d="M9 6.8h11M9 12h11M9 17.2h11"/><path d="M4.6 6.8h.01M4.6 12h.01M4.6 17.2h.01"/></symbol>
     <symbol id="i-play" viewBox="0 0 24 24"><path d="M9.2 6.6l8.6 5.4-8.6 5.4z"/></symbol>
+    <symbol id="i-scan" viewBox="0 0 24 24"><path d="M4.5 8.6V6.3a1.8 1.8 0 0 1 1.8-1.8h2.3"/><path d="M15.4 4.5h2.3a1.8 1.8 0 0 1 1.8 1.8v2.3"/><path d="M19.5 15.4v2.3a1.8 1.8 0 0 1-1.8 1.8h-2.3"/><path d="M8.6 19.5H6.3a1.8 1.8 0 0 1-1.8-1.8v-2.3"/><path d="M8.6 10.4h6.8"/><path d="M8.6 13.8h4.4"/></symbol>
+    <symbol id="i-quote" viewBox="0 0 24 24"><path d="M9.9 7.4c-2.7 1.6-4.1 4.1-4.1 7.2 0 2 1.1 3.2 2.8 3.2 1.5 0 2.6-1.1 2.6-2.6 0-1.4-1-2.4-2.4-2.4"/><path d="M19.2 7.4c-2.7 1.6-4.1 4.1-4.1 7.2 0 2 1.1 3.2 2.8 3.2 1.5 0 2.6-1.1 2.6-2.6 0-1.4-1-2.4-2.4-2.4"/></symbol>
+    <symbol id="i-tag" viewBox="0 0 24 24"><path d="M4.6 11.3V5.9a1.3 1.3 0 0 1 1.3-1.3h5.4a1.3 1.3 0 0 1 .9.4l6.9 6.9a1.3 1.3 0 0 1 0 1.8l-5.4 5.4a1.3 1.3 0 0 1-1.8 0l-6.9-6.9a1.3 1.3 0 0 1-.4-.9z"/><path d="M8.4 8.4h.01"/></symbol>
   </defs>
 </svg>
 
@@ -192,6 +195,9 @@
           <button class="tab" data-tab="segments" role="tab" aria-selected="false">
             分句<span class="tab-count" id="segCount"></span>
           </button>
+          <button class="tab" data-tab="analysis" role="tab" aria-selected="false" id="analysisTab" hidden>
+            <svg class="ico" aria-hidden="true"><use href="#i-scan"></use></svg>解析
+          </button>
           <button class="tab" data-tab="rewrite" role="tab" aria-selected="false" id="rewriteTab" hidden>
             <svg class="ico" aria-hidden="true"><use href="#i-spark"></use></svg>改写
           </button>
@@ -220,6 +226,30 @@
         </div>
         <div class="seg-list" id="segList" tabindex="0" role="region" aria-label="分句列表"></div>
         <div class="seg-sentinel" id="segSentinel" hidden></div>
+      </div>
+
+      <div class="panel-body" id="panelAnalysis" role="tabpanel" aria-label="解析" hidden>
+        <div class="ana-bar">
+          <div class="ana-bar-main">
+            <span class="ana-state" id="anaState">－</span>
+            <span class="hint" id="anaMeta"></span>
+            <span class="hint ana-source" id="anaSource" hidden></span>
+          </div>
+          <div class="ana-bar-actions">
+            <button class="btn btn-quiet btn-sm" id="anaCopyAll" type="button" hidden>
+              <svg class="ico" aria-hidden="true"><use href="#i-copy"></use></svg>复制解析
+            </button>
+            <button class="btn btn-quiet btn-sm" id="anaRedo" type="button" hidden>
+              <svg class="ico" aria-hidden="true"><use href="#i-refresh"></use></svg>重新解析
+            </button>
+          </div>
+        </div>
+        <div class="ana-progress" id="anaProgress" hidden>
+          <div class="progress" role="progressbar" aria-valuemin="0" aria-valuemax="100"
+            aria-valuenow="0" aria-label="解析进度" id="anaProgressBar"><i id="anaBar"></i></div>
+          <span class="hint ana-progress-text" id="anaProgressText" aria-live="polite"></span>
+        </div>
+        <div class="ana-body" id="anaBody" aria-live="polite"></div>
       </div>
 
       <div class="panel-body" id="panelRewrite" role="tabpanel" aria-label="改写" hidden>

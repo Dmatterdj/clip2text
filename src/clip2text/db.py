@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import threading
 from collections.abc import Iterable
@@ -15,7 +16,18 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from .models import Batch, BatchStatus, Segment, Stage, Task, TaskStatus, utcnow
+from .models import (
+    Analysis,
+    Batch,
+    BatchStatus,
+    Segment,
+    Stage,
+    Task,
+    TaskStatus,
+    utcnow,
+)
+
+log = logging.getLogger(__name__)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS tasks (
@@ -65,6 +77,19 @@ CREATE TABLE IF NOT EXISTS batches (
 );
 
 CREATE INDEX IF NOT EXISTS idx_batches_created_at ON batches(created_at DESC);
+
+-- 内容解析结果：一个任务只保留最新一份，重新分析直接覆盖。
+-- payload 是 Analysis 的完整 JSON，列上的 model/state 只是为了查询与巡检。
+CREATE TABLE IF NOT EXISTS analyses (
+    task_id     TEXT PRIMARY KEY,
+    payload     TEXT NOT NULL,
+    model       TEXT,
+    state       TEXT NOT NULL,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_analyses_state ON analyses(state);
 """
 
 
@@ -198,7 +223,10 @@ class Database:
         return self._row_to_task(row) if row else None
 
     def delete(self, task_id: str) -> bool:
+        # 同一事务里级联删掉分析结果：留下孤儿数据既占空间，
+        # 也会让「删了任务但 /analysis 还能读到」这种情形出现。
         with self._lock:
+            self._conn.execute("DELETE FROM analyses WHERE task_id=?", (task_id,))
             cur = self._conn.execute("DELETE FROM tasks WHERE id=?", (task_id,))
             self._conn.commit()
         return cur.rowcount > 0
@@ -333,3 +361,78 @@ class Database:
             cur = self._conn.execute("DELETE FROM batches WHERE id=?", (batch_id,))
             self._conn.commit()
         return cur.rowcount > 0
+
+    # ---------------- 内容解析 ----------------
+    def upsert_analysis(self, analysis: Analysis) -> Analysis:
+        """一个任务只留一份结果，重复分析覆盖旧的（契约 §6）。"""
+        params = {
+            "task_id": analysis.task_id,
+            "payload": analysis.model_dump_json(),
+            "model": analysis.model or None,
+            "state": analysis.state,
+            "created_at": _dt_to_str(analysis.created_at),
+            "updated_at": _dt_to_str(utcnow()),
+        }
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO analyses (task_id, payload, model, state, created_at, updated_at)
+                VALUES (:task_id, :payload, :model, :state, :created_at, :updated_at)
+                ON CONFLICT(task_id) DO UPDATE SET
+                    payload=excluded.payload,
+                    model=excluded.model,
+                    state=excluded.state,
+                    created_at=excluded.created_at,
+                    updated_at=excluded.updated_at
+                """,
+                params,
+            )
+            self._conn.commit()
+        return analysis
+
+    def get_analysis(self, task_id: str) -> Analysis | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM analyses WHERE task_id=?", (task_id,)
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            return Analysis.model_validate_json(row["payload"])
+        except ValueError:
+            # 老版本/手工改坏的 payload 不该让整个接口 500：当作没有结果，
+            # 用户重新点一次解析即可覆盖。
+            log.warning("分析结果 payload 无法解析，已忽略：task_id=%s", task_id)
+            return None
+
+    def delete_analysis(self, task_id: str) -> bool:
+        with self._lock:
+            cur = self._conn.execute("DELETE FROM analyses WHERE task_id=?", (task_id,))
+            self._conn.commit()
+        return cur.rowcount > 0
+
+    def fail_running_analyses(self, reason: str = "服务重启，分析被中断") -> int:
+        """启动时把上次进程留下的 RUNNING 分析标记失败。
+
+        与任务的处理一致：进程没了，SSE 连接也断了，不可能再有结果，
+        留着 RUNNING 只会让前端永远转圈。
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT task_id, payload FROM analyses WHERE state='RUNNING'"
+            ).fetchall()
+
+        count = 0
+        for row in rows:
+            try:
+                analysis = Analysis.model_validate_json(row["payload"])
+            except ValueError:
+                analysis = Analysis(task_id=row["task_id"])
+            analysis = analysis.model_copy(
+                update={"state": "FAILED", "error": reason}
+            )
+            self.upsert_analysis(analysis)
+            count += 1
+        if count:
+            log.info("启动清理：%d 个 RUNNING 分析标记为 FAILED", count)
+        return count

@@ -18,6 +18,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import __version__
+from .api.analysis_routes import router as analysis_router
 from .api.batch_routes import router as batch_router
 from .api.routes import router
 from .config import get_settings
@@ -68,6 +69,9 @@ def create_app() -> FastAPI:
 
     app.include_router(router)
     app.include_router(batch_router)
+    # 内容解析（长文本结构化总结）单独一个文件：它与任务/批量生命周期无关，
+    # 是「对已有转写结果再加工」，混进 routes.py 会越滚越大。
+    app.include_router(analysis_router)
 
     @app.exception_handler(PipelineError)
     async def _pipeline_error(_: Request, exc: PipelineError) -> JSONResponse:
