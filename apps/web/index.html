@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>clip2text · 本地文案提取</title>
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">c2t</span>
+      <div>
+        <h1>clip2text</h1>
+        <p class="tagline">本地转写 · 不上传第三方 · 默认零 API key</p>
+      </div>
+    </div>
+    <div class="caps" id="caps" title="本机能力">
+      <span class="caps-loading">检测能力中…</span>
+    </div>
+  </header>
+
+  <main>
+    <!-- 上传区 -->
+    <section class="card" id="uploadCard">
+      <h2>1 · 选择文件</h2>
+      <div class="dropzone" id="dropzone" tabindex="0" role="button"
+           aria-label="点击或拖拽文件到此处上传">
+        <input type="file" id="fileInput" hidden
+               accept=".mp4,.mov,.mkv,.avi,.webm,.flv,.wmv,.m4v,.ts,.3gp,.mp3,.wav,.m4a,.aac,.flac,.ogg,.opus,.wma,.amr,.aiff">
+        <div class="dz-inner">
+          <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <polyline points="7 10 12 5 17 10"/><line x1="12" y1="5" x2="12" y2="16"/>
+          </svg>
+          <strong>点击选择</strong> 或把音视频拖到这里
+          <span class="hint" id="limitHint">支持 mp4 / mov / mp3 / wav / m4a 等</span>
+        </div>
+      </div>
+      <div class="file-row" id="fileRow" hidden>
+        <span class="file-name" id="fileName"></span>
+        <span class="file-size" id="fileSize"></span>
+        <button class="btn ghost" id="clearFile" type="button">更换</button>
+      </div>
+      <div class="progress" id="uploadProgress" hidden>
+        <div class="bar"><i id="uploadBar"></i></div>
+        <span id="uploadPct">0%</span>
+      </div>
+    </section>
+
+    <!-- 操作区 -->
+    <section class="card">
+      <h2>2 · 开始提取</h2>
+      <div class="actions">
+        <button class="btn primary" id="startBtn" type="button" disabled>
+          开始转写
+        </button>
+        <button class="btn ghost" id="cancelBtn" type="button" hidden>取消</button>
+        <span class="status-text" id="statusText"></span>
+      </div>
+      <p class="disclaimer">
+        文件只在本机处理，不会上传到任何第三方服务。
+      </p>
+    </section>
+
+    <!-- 结果区 -->
+    <section class="card" id="resultCard" hidden>
+      <h2>3 · 结果</h2>
+      <div class="result-meta" id="resultMeta"></div>
+
+      <div class="tabs" role="tablist">
+        <button class="tab active" data-tab="text" role="tab" aria-selected="true">正文</button>
+        <button class="tab" data-tab="segments" role="tab" aria-selected="false">分句</button>
+      </div>
+
+      <div class="tab-panel" id="panel-text">
+        <textarea id="resultText" readonly rows="12" spellcheck="false"></textarea>
+        <div class="row-actions">
+          <button class="btn ghost" id="copyText" type="button">复制全文</button>
+          <span class="copy-hint" id="copyHint"></span>
+        </div>
+      </div>
+
+      <div class="tab-panel" id="panel-segments" hidden>
+        <div class="segments" id="segments"></div>
+      </div>
+
+      <div class="export-row">
+        <span>导出：</span>
+        <button class="btn chip" data-format="txt" type="button">TXT</button>
+        <button class="btn chip" data-format="markdown" type="button">Markdown</button>
+        <button class="btn chip" data-format="docx" type="button">Word</button>
+        <button class="btn chip" data-format="xlsx" type="button">Excel</button>
+      </div>
+    </section>
+
+    <!-- 历史 -->
+    <section class="card">
+      <div class="card-head">
+        <h2>历史记录</h2>
+        <button class="btn ghost small" id="refreshHistory" type="button">刷新</button>
+      </div>
+      <div id="history" class="history"></div>
+    </section>
+  </main>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <script src="./app.js"></script>
+</body>
+</html>
