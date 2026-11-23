@@ -19,6 +19,7 @@ from typing import Annotated
 from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import Response, StreamingResponse
 
+from .. import __version__
 from ..asr import engine_statuses
 from ..config import Settings
 from ..exporters import MEDIA_TYPES, SUPPORTED, export, safe_filename
@@ -52,7 +53,7 @@ def capabilities() -> dict[str, object]:
 
     local_asr = [e for e in asr if e.available and e.name != "deepseek"]
     return {
-        "version": "0.1.0",
+        "version": __version__,
         "ffmpeg": {
             "available": ff is not None,
             "source": ff.source if ff else None,

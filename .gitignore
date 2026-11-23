@@ -45,3 +45,7 @@ dist/
 *.log
 tests/fixtures/*.wav
 tests/fixtures/
+
+# 构建产物
+dist/
+build/

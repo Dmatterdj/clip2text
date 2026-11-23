@@ -1,5 +1,9 @@
 # clip2text
 
+![version](https://img.shields.io/badge/version-0.1.0-blue)
+![python](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue)
+![license](https://img.shields.io/badge/license-Apache--2.0-green)
+
 把视频、音频、图片里的内容，提取成可编辑的文字。**本地优先、默认零 API key、不上传第三方。**
 
 一个可以完全跑在自己电脑上的"文案提取"工具。不需要注册、不需要充值，
@@ -282,9 +286,12 @@ ASR / OCR / LLM 都是 Protocol + 多实现，配置切换。
 
 ### 为什么不用框架写前端
 
-`apps/web` 是一个 `index.html` + 一个 `style.css` + 一个 `app.js`，
+`src/clip2text/web` 是一个 `index.html` + 一个 `style.css` + 一个 `app.js`，
 没有构建步骤，没有 `node_modules`。整个页面就几屏，引入 React
 只会让 clone 下来多等 3 分钟。
+
+放在包内而不是仓库根的 `apps/` 下，是因为 wheel 只打包 `src/clip2text`：
+放外面的话 `pip install` 装修完就没有界面了（这个坑踩过）。
 
 ---
 
@@ -316,7 +323,8 @@ src/clip2text/
 ├─ asr/             ASR 引擎（mlx / faster-whisper / deepseek）+ HF 镜像
 ├─ ocr/             OCR 引擎（rapidocr / deepseek）
 ├─ extractors/      链接解析（bilibili / yt-dlp / 插件）
-└─ exporters/       txt / md / docx / xlsx
+├─ exporters/       txt / md / docx / xlsx
+└─ web/             前端静态文件（html/css/js，无构建）
 ```
 
 ---

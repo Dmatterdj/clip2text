@@ -31,7 +31,9 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-WEB_DIR = Path(__file__).resolve().parents[2] / "apps" / "web"
+# 前端资源放在包内（src/clip2text/web），这样 pip 安装后也能用。
+# 不能放仓库根的 apps/ 下：wheel 只打包 src/clip2text，装完就找不到界面了。
+WEB_DIR = Path(__file__).resolve().parent / "web"
 
 
 @asynccontextmanager
@@ -91,7 +93,7 @@ def create_app() -> FastAPI:
                 "service": "clip2text",
                 "version": __version__,
                 "docs": "/docs",
-                "note": "未找到前端静态文件（apps/web/index.html）",
+                "note": "未找到前端静态文件（src/clip2text/web/index.html）",
             }
 
     return app
