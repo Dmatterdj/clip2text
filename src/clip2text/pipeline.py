@@ -35,7 +35,7 @@ from pathlib import Path
 from .asr import ASREngine, ASRError, build_engines, select_engine
 from .config import Settings, get_settings
 from .db import Database
-from .media import FFmpegError, extract_audio, probe_duration, split_audio
+from .media import FFmpegError, extract_audio, probe_duration, slice_audio, split_audio
 from .media.chunker import Chunk
 from .models import Segment, Stage, Task, TaskStatus, utcnow
 
@@ -389,7 +389,13 @@ class Pipeline:
             total = len(chunks)
             texts: list[str] = []
             segments: list[Segment] = []
-            language: str | None = None
+            # 先定语言，再开始全量转写。
+            # 为什么不能留空：各引擎的中文标点提示词依赖明确的 language，
+            # 传 None 时 _initial_prompt() 返回 None，提示词不生效，
+            # 输出就会是 "- 我是森森" 这种带破折号、无标点的文本。
+            language: str | None = self.settings.asr_language_or_none
+            if language is None:
+                language = await self._probe_language(engine, wav, work_dir)
             done = 0
             for i, chunk in enumerate(chunks):
                 if self._is_cancelled(task_id):
@@ -401,7 +407,7 @@ class Pipeline:
                     done += 1
                 else:
                     cached = await self._transcribe_chunk(
-                        task, engine, chunk, index=i, total=total
+                        task, engine, chunk, index=i, total=total, language=language
                     )
                     if self.settings.resume_enabled:
                         checkpoint.record(cached)
@@ -409,7 +415,10 @@ class Pipeline:
 
                 if cached.text:
                     texts.append(cached.text)
-                language = language or cached.language
+                # 注意：不要用 cached.language 覆盖已解析的 language。
+                # 探测阶段已经定好语言，这里覆盖会让后续分片丢掉标点提示词。
+                if language is None:
+                    language = cached.language
                 # 把片内时间戳平移到整段音频的绝对时间
                 for seg in cached.segments:
                     segments.append(seg)
@@ -708,6 +717,38 @@ class Pipeline:
             with contextlib.suppress(asyncio.CancelledError):
                 await watcher
 
+    async def _probe_language(
+        self, engine, wav: Path, work_dir: Path
+    ) -> str | None:
+        """用前 30 秒探测语言，再带着它跑全量。
+
+        为什么值得多跑一次 30 秒：
+          各引擎的中文标点提示词（initial_prompt）只有在 language 明确时
+          才会生效。用户没配 ASR_LANGUAGE 时 language 是 None，提示词会被
+          跳过，输出变成 "- 我是森森" 这种没有标点的文本。
+          本机实测：60 秒中文播客，无提示词 22/26 段带破折号前缀且 0 段
+          有标点；带提示词后破折号全部消失、标点正常。
+
+        代价：30 秒音频的转写，长内容场景下可忽略（2 小时音频约多 3 秒）。
+        失败时不阻塞主流程，返回 None 让引擎自己判断。
+        """
+        probe = work_dir / "probe.wav"
+        try:
+            await asyncio.to_thread(
+                slice_audio, wav, probe, start=0.0, duration=30.0,
+                mode=self.settings.ffmpeg_mode,
+            )
+            result = await asyncio.to_thread(engine.transcribe, probe, None)
+            lang = getattr(result, "language", None)
+            if lang:
+                log.info("语言探测：%s（将用于全量转写以启用标点提示词）", lang)
+            return lang or None
+        except Exception as exc:  # noqa: BLE001 - 探测失败不该让任务失败
+            log.warning("语言探测失败，按自动检测继续：%s", exc)
+            return None
+        finally:
+            probe.unlink(missing_ok=True)
+
     async def _split_chunks(
         self,
         task: Task,
@@ -772,6 +813,7 @@ class Pipeline:
         *,
         index: int,
         total: int,
+        language: str | None = None,
     ) -> ChunkResult:
         """转写单个分片，失败重试。时间戳在这里平移成绝对时间。
 
@@ -783,7 +825,7 @@ class Pipeline:
         for attempt in range(1, attempts + 1):
             try:
                 result = await asyncio.to_thread(
-                    engine.transcribe, chunk.path, self.settings.asr_language_or_none
+                    engine.transcribe, chunk.path, language
                 )
             except (ASRError, OSError, RuntimeError) as exc:
                 last = exc

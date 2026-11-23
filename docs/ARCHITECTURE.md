@@ -313,8 +313,26 @@ PENDING ──► RUNNING ──► DONE      （全成功）
 | `condition_on_previous_text=False` | `- 我是森森`（无效） |
 | **`initial_prompt` 给标点示范** | `我是森森，我是蓝白，我是石天，` |
 
-已给 mlx / faster-whisper 两个引擎都加上中日文提示词（`_initial_prompt`），
-并加测试覆盖。破折号前缀从 9/9 段降到 0/9 段。
+已给 mlx / faster-whisper 两个引擎都加上中日文提示词（`_initial_prompt`）。
+
+**但只加提示词还不够**：pipeline 原来把 `language=None` 传给引擎，
+`_initial_prompt(None)` 返回 `None`，提示词根本不生效。第一次修完实测
+仍 22/26 段带破折号就是这个原因。
+
+已补 `_probe_language()`：未配置 `ASR_LANGUAGE` 时先用前 30 秒探一次语言，
+再带明确 language 跑全量。实测后：
+
+| 指标 | 修复前 | 修复后 |
+|---|---|---|
+| 破折号前缀 | 22/26 段 | **0/9 段** |
+| language | None | **zh** |
+
+代价：长内容多一次 30 秒转写（2 小时音频约多 3 秒）。
+
+### 仍未解决：标点仍不稳定
+
+修复后破折号消失，但**逗号句号仍常常缺失**（实测 0/9 段含标点），
+原因是 whisper 自身在这个音频上的输出就不稳定（见下一节）。
 
 ### 未修：mlx-whisper 输出不稳定
 

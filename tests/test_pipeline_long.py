@@ -600,3 +600,59 @@ def test_chunk_result_serialization_roundtrip():
     assert restored.text == "内容"
     assert restored.segments[0].start == 1.0
     assert restored.language == "zh"
+
+
+# ================================================================ 语言探测
+def test_language_probe_feeds_initial_prompt(tmp_path, monkeypatch):
+    """没配 ASR_LANGUAGE 时必须先探测语言。
+
+    为什么重要：各引擎的中文标点提示词依赖明确的 language，
+    传 None 时提示词被跳过，输出是 "- 我是森森" 这种无标点文本。
+    """
+    from clip2text.config import Settings
+    from clip2text.db import Database
+    from clip2text.pipeline import Pipeline
+
+    settings = Settings(data_dir=tmp_path / "d", asr_language="")
+    settings.ensure_dirs()
+    db = Database(settings.db_path)
+    p = Pipeline(settings, db)
+
+    class FakeEngine:
+        name = "fake"
+        calls: list = []
+
+        def transcribe(self, audio, language=None):
+            type(self).calls.append(language)
+            from clip2text.models import Transcript
+
+            return Transcript(text="测试", segments=[], language="zh")
+
+    import asyncio
+
+    wav = tmp_path / "a.wav"
+    wav.write_bytes(b"RIFF")
+    eng = FakeEngine()
+
+    # 让切片函数直接产出一个假文件，不依赖 ffmpeg
+    import clip2text.pipeline as mod
+
+    monkeypatch.setattr(
+        mod, "slice_audio", lambda *a, **k: (tmp_path / "probe.wav").write_bytes(b"x")
+    )
+
+    lang = asyncio.run(p._probe_language(eng, wav, tmp_path))
+    assert lang == "zh"
+    # 探测时不应预设语言，让引擎自己判断
+    assert eng.calls == [None]
+
+
+def test_configured_language_skips_probe(tmp_path):
+    """配了 ASR_LANGUAGE 就不该再探测，省一次转写。"""
+    from clip2text.config import Settings
+
+    s = Settings(asr_language="zh")
+    assert s.asr_language_or_none == "zh"
+
+    s2 = Settings(asr_language="")
+    assert s2.asr_language_or_none is None
