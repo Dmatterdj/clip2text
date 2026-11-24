@@ -656,3 +656,50 @@ def test_configured_language_skips_probe(tmp_path):
 
     s2 = Settings(asr_language="")
     assert s2.asr_language_or_none is None
+
+
+def test_image_task_needs_no_asr_engine(tmp_path, monkeypatch):
+    """图片任务不能因为「没有 ASR 引擎」而失败。
+
+    这条是 CI 上暴露的真实缺陷：pipeline 原来在分支之前无条件调
+    select_engine()，于是没装 whisper 的用户连 OCR 都用不了。
+    本地装了 whisper 时测试看似通过，掩盖了问题。
+    """
+    import asyncio
+
+    from clip2text import ocr as ocr_mod
+    from clip2text import pipeline as pipeline_mod
+    from clip2text.asr import ASRError
+    from clip2text.config import Settings
+    from clip2text.db import Database
+    from clip2text.ocr.base import OCRLine, OCRResult
+    from clip2text.pipeline import Pipeline
+
+    # 让「选 ASR 引擎」必然失败：图片任务本就不该走到这一步
+    def boom(*a, **k):
+        raise ASRError("断言：图片任务不应选择 ASR 引擎")
+
+    monkeypatch.setattr(pipeline_mod, "select_engine", boom)
+    monkeypatch.setattr(
+        ocr_mod,
+        "recognize_images",
+        lambda images, settings, on_progress=None: OCRResult(
+            text="图片里的字", lines=[OCRLine(text="图片里的字")], engine="fakeocr"
+        ),
+    )
+
+    settings = Settings(data_dir=tmp_path / "d")
+    settings.ensure_dirs()
+    db = Database(settings.db_path)
+    p = Pipeline(settings, db)
+
+    img = tmp_path / "a.png"
+    img.write_bytes(b"\x89PNG")
+    task = p.create_task(source_type="upload", source_value=str(img), work_type="image")
+
+    asyncio.run(p.run(task.id))
+
+    final = db.get(task.id)
+    assert final is not None
+    assert final.status.value == "SUCCESS", final.error_message
+    assert final.text_content == "图片里的字"

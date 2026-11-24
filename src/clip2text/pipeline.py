@@ -324,7 +324,24 @@ class Pipeline:
         work_dir.mkdir(parents=True, exist_ok=True)
 
         try:
-            # ---- 0. 续跑快路 ----
+            # ---- 0. 图片任务直接走 OCR ----
+            # 图片不需要语音识别。必须在 select_engine() 之前分流，
+            # 否则没装 ASR 引擎的用户连 OCR 都用不了 —— 这是一个真实缺陷：
+            # 「没有任何可用的 ASR 引擎」会让纯图片任务直接失败。
+            if task.work_type == "image":
+                await self._set(
+                    task, stage=Stage.FETCHING, status=TaskStatus.RUNNING, progress=2
+                )
+                if task.source_type == "upload":
+                    src = Path(task.source_value)
+                    if not src.exists():
+                        raise PipelineError(f"上传文件不存在: {src}")
+                else:
+                    src = await self._fetch_remote(task, work_dir)
+                await self._run_ocr(task, src, work_dir)
+                return task
+
+            # ---- 0b. 续跑快路 ----
             # 检查点只会在「下载 + 抽音轨 + 切分」全部成功之后才写入，所以它
             # 存在且可用，就说明前置产物是完整的。这时候重新下载 244MB 的
             # 播客并重跑一遍 ffmpeg 纯属浪费 —— 而恰恰是长内容最耗时的部分。
@@ -345,11 +362,6 @@ class Pipeline:
                         raise PipelineError(f"上传文件不存在: {src}")
                 else:
                     src = await self._fetch_remote(task, work_dir)
-
-                # ---- 2. 图片走 OCR 分支 ----
-                if task.work_type == "image":
-                    await self._run_ocr(task, src, work_dir)
-                    return task
 
                 # ---- 2b. 时长护栏 + 音频抽取 ----
                 # 先探测源文件时长：超限要在动 ffmpeg 之前就拒绝。
