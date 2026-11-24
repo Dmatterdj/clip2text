@@ -514,7 +514,14 @@ class Pipeline:
           · 单张图片上传：src 就是图片
           · 图文作品解析：图片 URL 列表需要先下载
         """
-        from .ocr import OCRError, recognize_images
+        # 用模块引用而不是 `from .ocr import recognize_images`：
+        # 后者会在函数内绑定额外的局部名，导致测试里的 monkeypatch
+        # 打在 clip2text.ocr 模块属性上时**不生效**（本地装了 rapidocr 会
+        # 真跑 OCR 而看似通过，CI 上没装就 FAILED）。
+        from . import ocr as ocr_mod
+
+        OCRError = ocr_mod.OCRError
+        recognize_images = ocr_mod.recognize_images
 
         await self._set(task, stage=Stage.OCR, progress=30)
 
@@ -593,10 +600,12 @@ class Pipeline:
                 "设回 true 后重启服务即可；请仅用于处理你拥有版权的内容，"
                 "详见 README 合规说明。"
             )
-        from .extractors import extract  # 延迟导入：启动时不碰网络/可选依赖
+        # 延迟导入：启动时不碰网络/可选依赖。
+        # 同样走模块属性，保证测试能 monkeypatch 掉它。
+        from . import extractors as extractors_mod
 
         result = await asyncio.to_thread(
-            extract, task.source_value, work_dir, self.settings
+            extractors_mod.extract, task.source_value, work_dir, self.settings
         )
         task.title = task.title or result.title
         task.content = result.content

@@ -87,11 +87,21 @@ def db(tmp_path: Path) -> Database:
 
 
 # ================================================================ §10.1 权限
+# Windows 不支持 POSIX 权限位：chmod(0o600) 实际留 0o666（438 十进制），
+# 这是 OS 行为不是 bug。这些用例在 Windows 上跳过，但**断言仍然保留**，
+# 因为 Linux/macOS 上它是真正生效的安全措施。
+posix_only = pytest.mark.skipif(
+    os.name == "nt", reason="Windows 没有 POSIX 权限位，chmod 0600 不生效"
+)
+
+
+@posix_only
 def test_saved_file_mode_is_0600(data_dir: Path):
     path = save_overrides(data_dir, {"llm": {"api_key": LONG_KEY}})
     assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
 
 
+@posix_only
 def test_overwriting_existing_0644_file_restores_0600(data_dir: Path):
     """已存在的老文件可能是 0644（手工创建/旧版本写的）。
 
