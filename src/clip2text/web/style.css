@@ -2499,3 +2499,73 @@ body.settings-open { overflow: hidden; }
   .u-total-main { font-size: 24px; }
   .s-actions .btn { flex: 1 1 auto; justify-content: center; }
 }
+
+/* ===== 模型列表 =====
+   一个 Key 常有多模型，用户记不住名字。这里把拉到的列表做成可点选的胶囊，
+   并在胶囊上标注上下文长度，让选择有依据。 */
+.s-model {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.s-model .input { flex: 1; min-width: 0; }
+.s-model .btn { flex-shrink: 0; white-space: nowrap; }
+
+.s-models {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-2);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.s-models-title {
+  flex: 1 0 100%;
+  margin: 0 0 2px;
+  font-size: 12.5px;
+  color: var(--fg-muted);
+}
+.s-models-empty {
+  flex: 1 0 100%;
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--fg-muted);
+}
+.s-models-err { color: var(--danger); }
+
+.s-model-chip {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--fg);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  transition: border-color .15s, background .15s;
+}
+.s-model-chip:hover { border-color: var(--fg-muted); }
+.s-model-chip.on {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface));
+}
+.s-model-chip[data-nonchat="1"] {
+  opacity: .55;
+  cursor: not-allowed;
+}
+.s-model-id {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+.s-model-meta {
+  font-size: 11.5px;
+  color: var(--fg-muted);
+  line-height: 1.3;
+}

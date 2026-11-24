@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
+from pydantic import BaseModel, Field
 
 log = logging.getLogger(__name__)
 
@@ -163,12 +164,23 @@ class LLMConfig:
     def configured(self) -> bool:
         return bool(self.base_url and self.model)
 
-    def endpoint(self) -> str:
+    def api_base(self) -> str:
+        """归一化到 `.../v1`。
+
+        用户可能填 `https://api.deepseek.com`、`https://api.deepseek.com/v1`
+        或 `https://api.deepseek.com/v1/` —— 三种都要得到同一个结果，
+        否则拼出来的 URL 会变成 /v1/v1/... 而 404。
+        """
         base = self.base_url.rstrip("/")
-        # 允许用户只填到域名，自动补 /v1 与 /chat/completions
         if not base.endswith("/v1"):
             base += "/v1"
-        return base + "/chat/completions"
+        return base
+
+    def endpoint(self, path: str = "/chat/completions") -> str:
+        return self.api_base() + path
+
+    def models_endpoint(self) -> str:
+        return self.endpoint("/models")
 
 
 def build_llm_config(base_url: str, api_key: str, model: str) -> LLMConfig:
@@ -315,3 +327,136 @@ async def rewrite_once(
     ):
         parts.append(chunk)
     return "".join(parts)
+
+
+# ---------------------------------------------------------------- 模型探测
+class ModelInfo(BaseModel):
+    """`GET /v1/models` 里一条模型记录。
+
+    只保留各家都可能给出的字段，其余原样放进 meta 供前端展示。
+    """
+
+    id: str
+    name: str = ""
+    context_window: int | None = None
+    max_output_tokens: int | None = None
+    input_modalities: list[str] = Field(default_factory=list)
+    # 是不是对话模型。有些服务会把 embedding / rerank 混在同一个列表里，
+    # 选错了会在调用时报 400，所以提前标出来。
+    chat_capable: bool = True
+    meta: dict = Field(default_factory=dict)
+
+
+# 名字里带这些词的通常是向量/重排模型，不能用来聊天
+_NON_CHAT_HINTS = ("embed", "embedding", "rerank", "moderation", "whisper", "tts")
+
+
+def _looks_chat_capable(model_id: str, raw: dict) -> bool:
+    lower = (model_id or "").lower()
+    if any(h in lower for h in _NON_CHAT_HINTS):
+        return False
+    # DeepSeek 等会在 output_modalities 里标；没有就按名字判断
+    outs = raw.get("output_modalities")
+    if isinstance(outs, list) and outs and "text" not in outs:
+        return False
+    return True
+
+
+def list_models(
+    base_url: str, api_key: str, *, timeout: int = 30
+) -> list[ModelInfo]:
+    """列出这条 key 能用的模型。
+
+    这是 OpenAI 兼容协议的标准端点（DeepSeek / Ollama / vLLM / one-api
+    这类网关都支持）。它需要一个**有效**的 key —— 传错 key 会拿到 401，
+    所以这个调用本身也兼作连通性与鉴权的验证。
+
+    兼容三种常见返回形状：
+      1. {"data": [{"id": ...}, ...]}      ← OpenAI 标准
+      2. [{"id": ...}, ...]                ← 少数网关直接给数组
+      3. {"models": [{"name": ...}, ...]}  ← Ollama 原生格式
+    """
+    cfg = LLMConfig(base_url=base_url.strip(), api_key=api_key.strip(), model="")
+    if not cfg.base_url:
+        raise LLMError("请先填写 Base URL")
+
+    headers: dict[str, str] = {}
+    if cfg.api_key:
+        headers["Authorization"] = f"Bearer {cfg.api_key}"
+
+    try:
+        resp = httpx.get(cfg.models_endpoint(), headers=headers, timeout=timeout)
+    except httpx.HTTPError as exc:
+        raise LLMError(f"连不上 {cfg.models_endpoint()}：{exc}") from exc
+
+    if resp.status_code == 401 or resp.status_code == 403:
+        raise LLMError("鉴权失败，请检查 API Key 是否正确、是否有该服务的权限")
+    if resp.status_code == 404:
+        raise LLMError(
+            f"{cfg.models_endpoint()} 不存在。这个服务可能不支持 /v1/models，"
+            "请手工填写模型名。"
+        )
+    if resp.status_code != 200:
+        body = resp.text[:300]
+        raise LLMError(f"取模型列表失败（HTTP {resp.status_code}）：{_scrub(body, cfg.api_key)}")
+
+    try:
+        payload = resp.json()
+    except ValueError as exc:
+        raise LLMError("模型列表不是合法 JSON") from exc
+
+    entries = _extract_model_entries(payload)
+    out: list[ModelInfo] = []
+    for raw in entries:
+        if not isinstance(raw, dict):
+            continue
+        mid = str(raw.get("id") or raw.get("name") or raw.get("model") or "").strip()
+        if not mid:
+            continue
+        ctx = raw.get("context_window") or raw.get("context_length")
+        out.append(
+            ModelInfo(
+                id=mid,
+                name=str(raw.get("name") or raw.get("display_name") or ""),
+                context_window=int(ctx) if isinstance(ctx, int | float) else None,
+                max_output_tokens=(
+                    int(raw["max_output_tokens"])
+                    if isinstance(raw.get("max_output_tokens"), int | float)
+                    else None
+                ),
+                input_modalities=[
+                    str(x) for x in (raw.get("input_modalities") or []) if isinstance(x, str)
+                ],
+                chat_capable=_looks_chat_capable(mid, raw),
+                meta={
+                    k: v
+                    for k, v in raw.items()
+                    if k not in {"id", "name", "display_name", "context_window", "context_length"}
+                    and not isinstance(v, (dict, list))
+                },
+            )
+        )
+
+    if not out:
+        raise LLMError("接口返回了空模型列表，请确认这条 key 是否已开通模型")
+    # 对话模型排前面，其余按 id 排序，前端下拉默认就好用
+    out.sort(key=lambda m: (not m.chat_capable, m.id.lower()))
+    return out
+
+
+def _extract_model_entries(payload: object) -> list:
+    if isinstance(payload, list):
+        return payload
+    if isinstance(payload, dict):
+        for key in ("data", "models", "result"):
+            val = payload.get(key)
+            if isinstance(val, list):
+                return val
+    return []
+
+
+def _scrub(text: str, secret: str) -> str:
+    """上游报错里可能回显 key（DeepSeek 会自己打码，但不能指望每家都这样）。"""
+    if secret and secret in text:
+        return text.replace(secret, "***")
+    return text

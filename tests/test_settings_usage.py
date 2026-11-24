@@ -43,42 +43,7 @@ from clip2text.usage import (
 LONG_KEY = "sk-4f2aABCDEFGHIJKLMNOPQRSTUV9c1b"  # 足够长，走「前 6 后 4」分支
 
 
-@pytest.fixture
-def data_dir(tmp_path: Path) -> Path:
-    d = tmp_path / "data"
-    d.mkdir()
-    return d
-
-
-@pytest.fixture
-def tmp_settings(data_dir: Path) -> Settings:
-    s = Settings(data_dir=data_dir)
-    s.ensure_dirs()
-    return s
-
-
-@pytest.fixture
-def client(tmp_settings: Settings, monkeypatch):
-    """临时数据目录 + 干净环境变量的 app。
-
-    `monkeypatch.delenv` 很重要：开发者本机的 .env 里可能真有 key，
-    不清掉的话「GET 不返回原文」「DELETE 回落」这类断言会假阳性。
-    """
-    for name in ("LLM_BASE_URL", "LLM_API_KEY", "LLM_MODEL", "DEEPSEEK_API_KEY", "DEEPSEEK_BASE_URL"):
-        monkeypatch.delenv(name, raising=False)
-    reset_settings_cache()
-
-    from clip2text import state as state_mod
-
-    state_mod.reset_state()
-    from clip2text.app import create_app
-
-    app = create_app()
-    with TestClient(app) as c:
-        c.state = state_mod.init_state(tmp_settings)  # type: ignore[attr-defined]
-        yield c
-    state_mod.reset_state()
-    reset_settings_cache()
+# fixture 见 tests/conftest.py（data_dir / tmp_settings / client 共享）
 
 
 @pytest.fixture

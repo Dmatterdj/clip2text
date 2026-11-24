@@ -2739,6 +2739,86 @@ function prettyDetail(text) {
   return msg.replace(/\*{2,}[A-Za-z0-9]{2,}/g, '****');
 }
 
+/* 一个 Key 常能调多个模型，用户记不住名字。
+   这里用当前填的 base_url + key 去拉 GET /v1/models，
+   拉到之后既填 datalist（输入框下拉），也渲染成可点选列表。 */
+async function fetchModels() {
+  const btn = $('#sModelFetch');
+  const box = $('#sModels');
+  const baseUrl = ($('#sBaseUrl').value || '').trim();
+  const apiKey = ($('#sApiKey').value || '').trim();
+
+  if (!baseUrl) {
+    showLlmError('请先填写 Base URL');
+    return;
+  }
+
+  btn.disabled = true;
+  const oldText = btn.innerHTML;
+  btn.textContent = '获取中…';
+  box.hidden = false;
+  box.innerHTML = '<p class="s-models-empty">正在向服务端拉取模型列表…</p>';
+
+  try {
+    const res = await fetch(`${API}/settings/models`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      // key 留空时后端会回落到已保存的那个，所以用户不重填也能拉
+      body: JSON.stringify({ base_url: baseUrl, api_key: apiKey }),
+    });
+    const data = await res.json();
+
+    if (!res.ok || !data.ok) {
+      const reason = (data && data.reason) || `获取失败（HTTP ${res.status}）`;
+      box.innerHTML = `<p class="s-models-empty s-models-err">${esc(reason)}</p>`;
+      return;
+    }
+
+    const models = data.models || [];
+    if (!models.length) {
+      box.innerHTML = '<p class="s-models-empty">这条 Key 下没有可用模型，请手工填写模型名。</p>';
+      return;
+    }
+
+    // datalist 让输入框本身就能下拉选
+    $('#sModelList').innerHTML = models
+      .map((m) => `<option value="${esc(m.id)}">${esc(m.name || m.id)}</option>`)
+      .join('');
+
+    const current = ($('#sModel').value || '').trim() || data.current || '';
+    const chatCount = models.filter((m) => m.chat_capable !== false).length;
+
+    box.innerHTML = `<p class="s-models-title">这条 Key 能调 ${models.length} 个模型`
+      + `（其中 ${chatCount} 个可用于对话），点一个填入：</p>`
+      + models.map((m) => {
+        const disabled = m.chat_capable === false;
+        const bits = [];
+        if (m.context_window) bits.push(`上下文 ${fmtTokens(m.context_window)}`);
+        if (m.max_output_tokens) bits.push(`输出 ${fmtTokens(m.max_output_tokens)}`);
+        if (disabled) bits.push('不能用于对话');
+        const active = m.id === current ? ' on' : '';
+        return `<button type="button" class="s-model-chip${active}" data-model="${esc(m.id)}"`
+          + `${disabled ? ' data-nonchat="1"' : ''} title="${esc(m.id)}">`
+          + `<span class="s-model-id">${esc(m.id)}</span>`
+          + (bits.length ? `<span class="s-model-meta">${esc(bits.join(' · '))}</span>` : '')
+          + `</button>`;
+      }).join('');
+  } catch (err) {
+    box.innerHTML = `<p class="s-models-empty s-models-err">${esc(err.message)}</p>`;
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = oldText;
+  }
+}
+
+/* 128000 -> 128K，便于在窄条里显示 */
+function fmtTokens(n) {
+  const num = Number(n) || 0;
+  if (num >= 1000000) return `${(num / 1000000).toFixed(num % 1000000 ? 1 : 0)}M`;
+  if (num >= 1000) return `${Math.round(num / 1000)}K`;
+  return String(num);
+}
+
 async function testConnection() {
   const out = $('#sTestOut');
   const hint = $('#sTestHint');
@@ -2932,6 +3012,19 @@ function bind() {
   $('#sDsSave').addEventListener('click', saveDeepseek);
   $('#sDsClear').addEventListener('click', () => armClear('ds'));
   $('#sTestBtn').addEventListener('click', testConnection);
+  $('#sModelFetch').addEventListener('click', fetchModels);
+
+  /* 模型列表是渲染出来的，用事件委托，避免重渲染后失效 */
+  $('#sModels').addEventListener('click', (e) => {
+    const chip = e.target.closest('[data-model]');
+    if (!chip) return;
+    if (chip.dataset.nonchat === '1') {
+      toast('这个模型不能用于对话（它是向量/重排类模型）', 'err');
+      return;
+    }
+    $('#sModel').value = chip.dataset.model;
+    $$('#sModels .s-model-chip').forEach((c) => c.classList.toggle('on', c === chip));
+  });
 
   // 表单里按 Enter 等于点保存（只有单行输入，没有需要换行的东西）
   ['#sBaseUrl', '#sApiKey', '#sModel'].forEach((sel) => {

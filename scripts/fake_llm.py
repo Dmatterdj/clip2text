@@ -16,8 +16,8 @@ import json
 import re
 import time
 
-from fastapi import FastAPI
-from fastapi.responses import StreamingResponse
+from fastapi import FastAPI, Header
+from fastapi.responses import JSONResponse, StreamingResponse
 
 app = FastAPI(title="fake-openai")
 
@@ -134,6 +134,68 @@ def _fake_reduce(system: str, user: str) -> dict:
         "quotes": [{"text": "这是 reduce 塞进来的假金句，不该出现在结果里。", "start": 0}],
         "entities": ["假实体A", "假实体B"],
     }
+
+
+# 假的模型列表：故意混入一个 embedding 模型，用来验证前端的
+# 「不可对话模型」标记逻辑
+FAKE_MODELS = [
+    {
+        "id": "fake-chat",
+        "object": "model",
+        "owned_by": "fake",
+        "name": "Fake Chat (可对话)",
+        "context_window": 128000,
+        "max_output_tokens": 8192,
+        "input_modalities": ["text"],
+        "output_modalities": ["text"],
+    },
+    {
+        "id": "fake-chat-mini",
+        "object": "model",
+        "owned_by": "fake",
+        "name": "Fake Chat Mini",
+        "context_window": 32000,
+        "input_modalities": ["text"],
+        "output_modalities": ["text"],
+    },
+    {
+        "id": "fake-vision",
+        "object": "model",
+        "owned_by": "fake",
+        "name": "Fake Vision",
+        "context_window": 64000,
+        "input_modalities": ["text", "image"],
+        "output_modalities": ["text"],
+    },
+    {
+        "id": "fake-embedding",
+        "object": "model",
+        "owned_by": "fake",
+        "name": "Fake Embedding (不能对话)",
+        "output_modalities": ["embedding"],
+    },
+]
+
+
+@app.get("/v1/models")
+async def models(authorization: str = Header(default="")):
+    """OpenAI 兼容的模型列表。
+
+    故意要求鉴权：这样前端「用当前 key 拉列表」的行为能被真实验证 ——
+    key 错了应当 401，而不是悄悄返回一份假列表。
+    """
+    token = authorization.removeprefix("Bearer ").strip()
+    if not token:
+        return JSONResponse(
+            {"error": {"message": "缺少 API Key", "type": "authentication_error"}},
+            status_code=401,
+        )
+    if token.startswith("sk-bad"):
+        return JSONResponse(
+            {"error": {"message": "Authentication Fails", "type": "authentication_error"}},
+            status_code=401,
+        )
+    return {"object": "list", "data": FAKE_MODELS}
 
 
 @app.post("/v1/chat/completions")

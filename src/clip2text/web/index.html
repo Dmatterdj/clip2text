@@ -416,8 +416,19 @@
           </div>
           <div class="s-field">
             <label for="sModel">模型名</label>
-            <input class="input" id="sModel" type="text" spellcheck="false" autocomplete="off"
-              placeholder="deepseek-chat">
+            <div class="s-model">
+              <input class="input" id="sModel" type="text" spellcheck="false" autocomplete="off"
+                placeholder="deepseek-chat" list="sModelList" aria-describedby="sModelHint">
+              <datalist id="sModelList"></datalist>
+              <button class="btn btn-quiet btn-sm" id="sModelFetch" type="button">
+                <svg class="ico" aria-hidden="true"><use href="#i-refresh"></use></svg>
+                获取列表
+              </button>
+            </div>
+            <p class="s-hint" id="sModelHint">
+              一个 Key 往往能调多个模型。点「获取列表」自动列出，也可直接手填模型名。
+            </p>
+            <div class="s-models" id="sModels" hidden></div>
           </div>
           <div class="s-actions">
             <button class="btn btn-primary btn-sm" id="sLlmSave" type="button">保存</button>

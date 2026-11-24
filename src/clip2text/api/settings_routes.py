@@ -269,6 +269,66 @@ async def test_settings(payload: dict[str, Any] | None = None) -> dict[str, Any]
     }
 
 
+@router.post("/settings/models", summary="列出这条 key 能用的模型")
+def list_available_models(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    """用给定的（或当前生效的）配置去拉 `GET /v1/models`。
+
+    为什么需要这个端点：一个 key 底下往往挂着多个模型，
+    用户不可能记得住模型名。以前只能手填，填错就在调用时报 400。
+
+    请求体可传 `base_url` / `api_key` 覆盖当前配置 —— 这样用户在填表单
+    的过程中就能「先拉到列表再选」，不必先保存一份错误的配置。
+    不传则用当前生效配置。
+
+    返回 ok=false 而不是 500：拉不到列表是正常业务结果（key 没填、
+    服务不支持 /v1/models 等），前端据此提示「请手工填写模型名」。
+    """
+    from ..llm import LLMError, list_models
+
+    st = get_state()
+    st.sync_settings()
+    body = payload or {}
+
+    base_url = str(body.get("base_url") or "").strip()
+    api_key = str(body.get("api_key") or "").strip()
+
+    if not base_url or not api_key:
+        # 回落到当前生效配置
+        current = st.llm if st.llm.configured else (
+            st.analysis_config().config
+        )
+        if current is not None:
+            base_url = base_url or current.base_url
+            api_key = api_key or current.api_key
+
+    if not base_url:
+        return {"ok": False, "models": [], "reason": "请先填写 Base URL"}
+    if not api_key:
+        return {"ok": False, "models": [], "reason": "请先填写 API Key"}
+
+    try:
+        models = list_models(base_url, api_key)
+    except LLMError as exc:
+        reason = _redact_secret(str(exc), api_key)[:300]
+        log.info("拉取模型列表失败：%s", type(exc).__name__)
+        return {"ok": False, "models": [], "reason": reason}
+    except Exception as exc:  # noqa: BLE001 - 网络/解析异常都算拉取失败
+        log.warning("拉取模型列表异常：%s", type(exc).__name__)
+        return {
+            "ok": False,
+            "models": [],
+            "reason": _redact_secret(f"{type(exc).__name__}: {exc}", api_key)[:300],
+        }
+
+    log.info("拉取模型列表成功：%d 个（base_url=%s）", len(models), base_url)
+    return {
+        "ok": True,
+        "models": [m.model_dump() for m in models],
+        # 告诉前端「当前生效的模型是哪个」，方便下拉预选
+        "current": st.llm.model or (st.analysis_config().config.model if st.analysis_config().config else ""),
+    }
+
+
 # ---------------------------------------------------------------- 用量
 @router.get("/usage", response_model=UsageSummary, summary="用量汇总（估算）")
 def get_usage(days: int = Query(DEFAULT_DAYS, ge=1, le=MAX_DAYS, description="最近 N 天")) -> UsageSummary:
