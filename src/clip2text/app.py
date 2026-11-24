@@ -22,6 +22,7 @@ from .api.analysis_routes import router as analysis_router
 from .api.batch_routes import router as batch_router
 from .api.routes import router
 from .api.settings_routes import router as settings_router
+from .buildinfo import mark_loaded
 from .config import get_settings
 from .pipeline import PipelineError
 from .state import init_state, reset_state
@@ -41,7 +42,9 @@ WEB_DIR = Path(__file__).resolve().parent / "web"
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
-    log.info("启动 clip2text %s，数据目录 %s", __version__, settings.data_dir.resolve())
+    # 记录「现在载入内存的是哪一版代码」，用于检测「改了代码没重启」
+    build = mark_loaded()
+    log.info("启动 clip2text %s（build %s），数据目录 %s", __version__, build, settings.data_dir.resolve())
     state = init_state(settings)
     st = state.db.count_by_status()
     if st:

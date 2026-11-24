@@ -389,7 +389,12 @@ def list_models(
     except httpx.HTTPError as exc:
         raise LLMError(f"连不上 {cfg.models_endpoint()}：{exc}") from exc
 
-    if resp.status_code == 401 or resp.status_code == 403:
+    if resp.status_code in (401, 403):
+        # 尽量把上游的错误码带出来：不同网关的提示差别很大，
+        # 「Invalid API key」和「余额不足」要区分开，否则用户白折腾。
+        detail = _upstream_message(resp)
+        if detail:
+            raise LLMError(f"鉴权失败（{detail}）。请确认这条 Key 在该服务上有效、未过期。")
         raise LLMError("鉴权失败，请检查 API Key 是否正确、是否有该服务的权限")
     if resp.status_code == 404:
         raise LLMError(
@@ -460,3 +465,31 @@ def _scrub(text: str, secret: str) -> str:
     if secret and secret in text:
         return text.replace(secret, "***")
     return text
+
+
+def _upstream_message(resp: object) -> str:
+    """从上游错误体里抠一句人话。
+
+    不同网关的 401 含义差别很大，必须把原文带出来，否则用户白折腾：
+      {"code":"INVALID_API_KEY","message":"Invalid API key"}   ← 常见网关
+      {"error":{"message":"Authentication Fails ..."}}          ← DeepSeek / OpenAI
+      {"error":"invalid_api_key"}                              ← 少数实现
+    """
+    try:
+        body = resp.json()  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001 - 非 JSON 错误体很常见
+        return ""
+    if not isinstance(body, dict):
+        return ""
+    err = body.get("error")
+    if isinstance(err, dict) and err.get("message"):
+        return str(err["message"])[:120]
+    if isinstance(err, str) and err:
+        return err[:120]
+    msg = body.get("message") or body.get("msg") or body.get("detail")
+    if msg:
+        return str(msg)[:120]
+    code = body.get("code") or body.get("error_code")
+    if code:
+        return str(code)[:60]
+    return ""

@@ -179,3 +179,63 @@ def test_models_route_failure_returns_ok_false_not_500(client: TestClient):
     body = r.json()
     assert body["ok"] is False
     assert "鉴权失败" in body["reason"]
+
+
+# ---------------------------------------------------------------- 错误信息可诊断
+def test_401_surfaces_upstream_code():
+    """不同网关的 401 含义差别很大，必须把上游原文带出来。
+
+    实测这个网关（coding.testbird.ai）返回
+    {"code":"INVALID_API_KEY","message":"Invalid API key"}，
+    只笼统说「鉴权失败」会让用户不知道是 key 错还是没权限。
+    """
+    with fake_get({"code": "INVALID_API_KEY", "message": "Invalid API key"}, status=401):
+        with pytest.raises(LLMError) as ei:
+            list_models("https://x.com", "k")
+    msg = str(ei.value)
+    assert "Invalid API key" in msg
+    # 仍要有可操作的建议
+    assert "有效" in msg or "过期" in msg
+
+
+def test_401_deepseek_shape():
+    with fake_get(
+        {"error": {"message": "Authentication Fails, Your api key: ****9c1b is invalid"}},
+        status=401,
+    ):
+        with pytest.raises(LLMError) as ei:
+            list_models("https://api.deepseek.com", "k")
+    assert "Authentication Fails" in str(ei.value)
+
+
+def test_401_without_json_body():
+    resp = MagicMock()
+    resp.status_code = 401
+    resp.json.side_effect = ValueError("not json")
+    resp.text = ""
+    with patch("clip2text.llm.httpx.get", return_value=resp):
+        with pytest.raises(LLMError, match="鉴权失败"):
+            list_models("https://x.com", "k")
+
+
+# ---------------------------------------------------------------- 模型名误填 key
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "sk-99002a44a36ddf0b5bcead6fe3242950755b185a011bb810cf2c47e21",
+        "sk-c8d452e7dc7223365b7fe8c0fd0cc2b09be6f1cdc3dc328b7e749",
+    ],
+)
+def test_key_pasted_as_model_is_rejected(bad):
+    """截图里真的有人把 key 粘进模型名，与其保存成功再 401 不如提前拦。"""
+    from clip2text.settings_store import validate_model
+
+    with pytest.raises(ValueError, match="API Key"):
+        validate_model(bad)
+
+
+@pytest.mark.parametrize("ok", ["deepseek-chat", "gpt-4o-mini", "qwen2.5:7b", "glm-4"])
+def test_normal_model_names_still_pass(ok):
+    from clip2text.settings_store import validate_model
+
+    assert validate_model(ok) == ok

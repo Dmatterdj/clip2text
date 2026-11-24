@@ -433,6 +433,17 @@ function renderNotices(caps) {
       `<b>没找到 ffmpeg。</b>转码和切分依赖它，先装 ffmpeg 或设置 <code>FFMPEG_MODE</code>。`));
   }
 
+  /* 代码过期提示。
+     界面是实时读磁盘的，但 Python 模块要重启才生效 —— 于是会出现
+     「按钮在、点了报 405」这种让人一头雾水的现象。这里直接说清楚。 */
+  if (caps.build && caps.build.restart_required) {
+    items.push(noticeHtml('err', 'refresh',
+      `<b>你改了代码但服务还在跑旧版本。</b>`
+      + `界面已经是新的，后端还是旧的（build ${esc(caps.build.loaded)} → ${esc(caps.build.disk)}），`
+      + `所以有些功能点了会报错（比如 405）。`
+      + `<br><span class="hint">重启服务即可：先 Ctrl+C 停掉，再 <code>clip2text serve</code></span>`));
+  }
+
   // LLM 未配置也要说一声。
   // 之前「解析」和「改写」在不可用时整个隐藏，用户既不知道有这个功能，
   // 也不知道差什么才能用 —— 等于功能不存在。现在改成显式告知。
@@ -2750,6 +2761,13 @@ async function fetchModels() {
 
   if (!baseUrl) {
     showLlmError('请先填写 Base URL');
+    return;
+  }
+
+  // 旧后端没有 /settings/models 这个路由，点了会 405。
+  // 与其让用户困惑，不如直接说清楚。
+  if (state.caps && state.caps.features && state.caps.features.model_list === false) {
+    showLlmError('当前服务是旧版本，不支持自动列出模型。请手工填写模型名，或重启服务加载新代码。');
     return;
   }
 

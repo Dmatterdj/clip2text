@@ -225,6 +225,15 @@ def validate_model(value: str) -> str:
         raise ValueError(f"model 不能超过 {MAX_MODEL_LEN} 个字符")
     if any(ch.isspace() for ch in text):
         raise ValueError("model 不能包含空白字符")
+
+    # 现实里真的有人把 key 粘进模型名（截图见过）。模型名是「deepseek-chat」
+    # 这类短标识，而动辄 40+ 字符、以 sk- 开头的几乎必然是 key。
+    # 提前拦住，比让他保存成功然后在调用时报 401 好。
+    if text.lower().startswith(("sk-", "sk_", "bearer ")) and len(text) >= 20:
+        raise ValueError(
+            "这看起来是一个 API Key，不是模型名。模型名应形如 deepseek-chat；"
+            "Key 请填在上一栏。"
+        )
     return text
 
 

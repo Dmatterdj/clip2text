@@ -21,6 +21,7 @@ from fastapi.responses import Response, StreamingResponse
 
 from .. import __version__
 from ..asr import engine_statuses
+from ..buildinfo import current as build_info
 from ..config import Settings, settings_file
 from ..exporters import MEDIA_TYPES, SUPPORTED, export, safe_filename
 from ..extractors import platform_catalog, platform_summary
@@ -74,8 +75,24 @@ def capabilities() -> dict[str, object]:
     ocr = ocr_statuses(settings)
 
     local_asr = [e for e in asr if e.available and e.name != "deepseek"]
+    bi = build_info()
     return {
         "version": __version__,
+        # 内存里跑的代码 vs 磁盘上的代码。不一致说明改了代码没重启，
+        # 界面会据此提示（否则用户会看到「按钮在但点了 405」这种怪现象）。
+        "build": {
+            "loaded": bi.loaded,
+            "disk": bi.disk,
+            "restart_required": bi.restart_required,
+        },
+        # 版本能力位：前端据此决定按钮是否可用。
+        # 加了新接口就在这声明一下，旧后端缺这个字段时前端按 false 处理，
+        # 而不是让用户点了收到 405。
+        "features": {
+            "model_list": True,
+            "analysis": True,
+            "usage": True,
+        },
         "ffmpeg": {
             "available": ff is not None,
             "source": ff.source if ff else None,
