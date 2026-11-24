@@ -207,3 +207,75 @@ class Analysis(BaseModel):
     state: Literal["RUNNING", "SUCCESS", "FAILED"] = "SUCCESS"
     error: str | None = None
     created_at: datetime = Field(default_factory=utcnow)
+
+
+# ---------------------------------------------------------------- 设置与用量
+# 契约：docs/SETTINGS-CONTRACT.md §4
+# 这些模型只用于「对外响应形状」，内部存盘格式在 settings_store.py 里。
+class LLMSettings(BaseModel):
+    """任意 OpenAI 兼容服务的配置视图。
+
+    只有掩码，没有原文：`api_key` 永远不会出现在这个模型里，
+    想加字段的用户请注意这一点（安全约束 §2.1）。
+    """
+
+    base_url: str = ""
+    api_key_masked: str = ""  # 只读，GET 用
+    api_key_set: bool = False  # 是否已配置（不暴露原文）
+    model: str = ""
+    source: Literal["settings", "env", "none"] = "none"
+
+
+class DeepSeekSettings(BaseModel):
+    api_key_masked: str = ""
+    api_key_set: bool = False
+    base_url: str = "https://api.deepseek.com"
+    source: Literal["settings", "env", "none"] = "none"
+
+
+class SettingsView(BaseModel):
+    llm: LLMSettings
+    deepseek: DeepSeekSettings
+    # 有没有任一可用，等价于 analysis.available
+    analysis_ready: bool = False
+    # 配置文件路径（让用户知道东西存哪了）
+    config_path: str = ""
+
+
+UsageKind = Literal["asr", "ocr", "analysis", "rewrite"]
+
+
+class UsageEvent(BaseModel):
+    id: int
+    kind: UsageKind
+    task_id: str | None = None
+    model: str = ""
+    # 以下按 kind 填充，未使用为 0
+    audio_seconds: float = 0
+    images: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    created_at: datetime
+
+
+class UsageBucket(BaseModel):
+    """按维度聚合的一行。"""
+
+    key: str  # 日期 2026-11-24 / 类型 asr / 模型 deepseek-chat
+    audio_seconds: float = 0
+    images: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    estimated_cost: float = 0  # 单位：人民币元
+
+
+class UsageSummary(BaseModel):
+    total: UsageBucket  # key 固定为 "total"
+    by_day: list[UsageBucket]  # 最近 30 天，倒序
+    by_kind: list[UsageBucket]  # asr/ocr/analysis/rewrite
+    by_model: list[UsageBucket]
+    event_count: int = 0
+    currency: str = "CNY"
+    # 计价依据，让用户知道估算怎么来的
+    pricing: dict[str, float]
+

@@ -21,7 +21,7 @@ from fastapi.responses import Response, StreamingResponse
 
 from .. import __version__
 from ..asr import engine_statuses
-from ..config import Settings
+from ..config import Settings, settings_file
 from ..exporters import MEDIA_TYPES, SUPPORTED, export, safe_filename
 from ..extractors import platform_catalog, platform_summary
 from ..llm import style_list
@@ -64,6 +64,9 @@ def _analysis_capability(st: AppState) -> dict[str, object]:
 def capabilities() -> dict[str, object]:
     """前端据此决定渲染什么、禁用什么、提示什么。"""
     st = get_state()
+    # 先同步：用户在设置面板里刚存的 key 必须立刻反映到 capabilities，
+    # 前端靠这个刷 tab 可用状态（契约 §3「立即生效」）。
+    st.sync_settings()
     settings = st.settings
     ff = resolve_ffmpeg(settings.ffmpeg_mode)
 
@@ -106,6 +109,15 @@ def capabilities() -> dict[str, object]:
             "styles": [s["key"] for s in style_list()],
         },
         "analysis": _analysis_capability(st),
+        # 设置面板入口用：告诉前端「可以在这里配 key」以及配到哪去了。
+        # 只暴露「能不能改」+ 路径，不暴露任何 key 内容（契约 §2）。
+        "settings": {
+            "editable": True,
+            "config_path": str(settings_file(settings.data_dir)),
+            # 配置是文件级热更新，不需要重启进程
+            "hot_reload": True,
+        },
+        "usage": {"available": True},
         "exporters": list(SUPPORTED),
         "limits": {
             "max_upload_mb": settings.max_upload_mb,

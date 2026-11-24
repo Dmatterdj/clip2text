@@ -31,6 +31,7 @@ import httpx
 
 from .llm import LLMConfig
 from .models import Analysis, Chapter, Quote, Segment, Task, utcnow
+from .usage import record
 
 if TYPE_CHECKING:
     from .config import Settings
@@ -1005,6 +1006,7 @@ def build_job(
             return
 
         await _safe_store(db, analysis)
+        await _record_analysis_usage(db, analysis)
         if analysis.state == "SUCCESS":
             await runs.publish(
                 task.id,
@@ -1025,6 +1027,35 @@ async def _safe_store(db: Any, analysis: Analysis) -> None:
     except Exception:  # noqa: BLE001
         # 数据库已关闭（进程退出中）时不该再抛，否则任务日志全是噪音
         log.warning("分析结果落库失败：task_id=%s", analysis.task_id)
+
+
+async def _record_analysis_usage(db: Any, analysis: Analysis) -> None:
+    """分析用量埋点（契约 §7 的 analysis）。
+
+    为什么放在 build_job 而不是 run_analysis 里：
+      · run_analysis 拿不到 db；埋点写库是副作用，不该塞进纯计算函数
+      · token_usage 已经由 run_analysis 累计到 Analysis 上，这里只是搬运
+      · FAILED 也记：map 阶段花了 token 才失败，那笔钱是真花掉的
+    上游没返回 usage（token_usage is None）时 tokens 记 0，不估算。
+    """
+    usage = analysis.token_usage or {}
+    prompt = int(usage.get("prompt") or 0)
+    completion = int(usage.get("completion") or 0)
+    # 一次调用都没成功（没有任何 token）就不写空行，免得用量面板全是 0
+    if prompt == 0 and completion == 0 and analysis.state != "SUCCESS":
+        return
+    try:
+        await asyncio.to_thread(
+            record,
+            db,
+            "analysis",
+            task_id=analysis.task_id,
+            model=analysis.model,
+            prompt_tokens=prompt,
+            completion_tokens=completion,
+        )
+    except Exception:  # noqa: BLE001 - 埋点绝不能影响主流程
+        log.warning("分析用量埋点失败（已忽略）：task_id=%s", analysis.task_id, exc_info=True)
 
 
 # ---------------------------------------------------------------- 小工具

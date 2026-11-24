@@ -1937,3 +1937,565 @@ kbd {
   white-space: nowrap;
 }
 .ana-setup .hint { font-size: 12.5px; color: var(--fg-dim); }
+
+/* ============================================================================
+   设置面板：模型 / API Key / 用量（估算）
+   ---------------------------------------------------------------------------
+   · 复用 palette 那套「固定遮罩 + 弹层」的结构，Esc / 点遮罩关闭
+   · 面板内部自己滚动，页面本身被锁住（body.settings-open { overflow:hidden }）
+   · 遮罩 z-index 75：在命令面板(70)之上、toast(80) 之下，toast 永远看得见
+   · 对比度：块内浅底上只用 --fg / --fg-muted，不用 --fg-dim
+     （--fg-dim 在 --surface-2 上约 4.2，达不到 4.5）
+   ========================================================================== */
+
+body.settings-open { overflow: hidden; }
+
+.settings-wrap {
+  position: fixed;
+  inset: 0;
+  z-index: 75;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 16px;
+  background: rgba(2, 6, 23, .55);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+  animation: fade .16s var(--ease);
+}
+
+.settings {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 620px;
+  max-height: min(88vh, 900px);
+  border: 1px solid var(--border-2);
+  border-radius: 16px;
+  background: var(--surface);
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+  animation: pop .2s var(--ease);
+}
+.settings:focus { outline: none; }
+
+.settings-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex: none;
+  padding: 13px 12px 13px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.settings-head .ico { color: var(--accent); }
+.settings-head h2 {
+  margin: 0;
+  font-size: 14.5px;
+  font-weight: 600;
+  letter-spacing: .01em;
+}
+.settings-spacer { flex: 1; }
+
+/* ---- 顶部分区 tab ---- */
+.settings-tabs {
+  display: flex;
+  gap: 4px;
+  flex: none;
+  padding: 8px 14px 0;
+  border-bottom: 1px solid var(--border);
+}
+.stab {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px 10px;
+  border: 0;
+  border-radius: 8px 8px 0 0;
+  background: transparent;
+  color: var(--fg-muted);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.stab:hover { color: var(--fg); }
+.stab.on { color: var(--fg); font-weight: 600; }
+.stab.on::after {
+  content: "";
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: -1px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+.stab:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.stab-badge {
+  display: inline-block;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 1.6;
+}
+
+/* ---- 滚动区 ---- */
+.settings-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.sview { padding: 16px 18px 20px; }
+.sview[hidden] { display: none; }
+
+.s-lede {
+  margin: 0 0 12px;
+  font-size: 13px;
+  color: var(--fg-muted);
+}
+
+/* ---- 状态横幅：已配置 / 来自环境变量 / 未配置 ----
+   横幅底色带状态色，所以里面只能放 --fg 或 --fg-muted 的字。
+   --fg-dim 压在这些浅色底上实测只有 3.3-3.6，达不到 4.5，别用。 */
+.s-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-2);
+  border-left: 3px solid var(--accent);
+  border-radius: 10px;
+  background: var(--accent-soft);
+  color: var(--fg);
+  font-size: 12.5px;
+  line-height: 1.65;
+}
+.s-banner.warn { border-left-color: var(--warn); background: var(--warn-soft); }
+.s-banner.bad { border-left-color: var(--err); background: var(--err-soft); }
+.s-banner .ico { margin-top: 2px; flex: none; color: var(--accent); }
+.s-banner-sub {
+  display: inline-block;
+  margin-top: 2px;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--fg);
+  opacity: 1;
+}
+.s-banner.warn .ico { color: var(--warn); }
+.s-banner.bad .ico { color: var(--err); }
+.s-banner b { font-weight: 600; }
+.s-banner code {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--surface-3);
+  border: 1px solid var(--border);
+}
+
+/* ---- 配置块 ---- */
+.s-block {
+  margin-bottom: 12px;
+  padding: 13px 14px 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-2);
+}
+.s-block-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.s-block-head h3 {
+  margin: 0;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--fg);
+}
+.s-block-note {
+  margin: -4px 0 10px;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+.s-tag {
+  padding: 0 7px;
+  border: 1px solid var(--accent-line);
+  border-radius: 999px;
+  color: var(--accent);
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 1.7;
+  white-space: nowrap;
+}
+.s-tag.env { border-color: var(--warn-soft); color: var(--warn); }
+
+.s-field { margin-bottom: 10px; }
+.s-field > label {
+  display: block;
+  margin-bottom: 5px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--fg-muted);
+}
+/* 块内输入框压到 surface 上，跟浅底的块拉开一层 */
+.s-block .input { background: var(--surface); }
+.s-hint {
+  margin: 5px 0 0;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--fg-muted);
+}
+
+/* ---- Key 输入 + 显示/隐藏 ---- */
+.s-key { position: relative; }
+.s-key .input { padding-right: 38px; font-family: var(--font-mono); letter-spacing: .02em; }
+.s-eye {
+  position: absolute;
+  top: 50%;
+  right: 4px;
+  transform: translateY(-50%);
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+.s-eye:hover { background: var(--surface-3); color: var(--fg); }
+.s-eye:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+.s-eye .ico { width: 15px; height: 15px; }
+
+.s-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+
+/* ---- 错误：必须留在表单里，不能只 toast ---- */
+.s-error {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--err-soft);
+  border-left: 3px solid var(--err);
+  border-radius: 8px;
+  background: var(--err-soft);
+  color: var(--fg);
+  font-size: 12.5px;
+  line-height: 1.6;
+  word-break: break-word;
+}
+.s-error::before {
+  content: "出错了：";
+  color: var(--err);
+  font-weight: 600;
+}
+/* 深色下 --err(#f87171) 压在 err-soft 上只有 4.36，正文尺寸的字差一点点；
+   只给这个标题提亮一档，不动全局 token —— 别处的红是配套好的。 */
+:root[data-theme="dark"] .s-error::before { color: #fca5a5; }
+
+/* ---- 测试连接 ---- */
+.s-block-test { background: var(--surface); border-style: dashed; }
+.s-test-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.s-test-out { font-size: 12px; color: var(--fg-muted); }
+/* 上游报错可能是长 JSON：允许折行，但限高并自己滚，别把面板撑长 */
+#sTestHint {
+  max-height: 76px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  word-break: break-word;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.6;
+}
+.s-test-out.ok { color: var(--ok); }
+.s-test-out.bad { color: var(--err); }
+
+/* ---- 本地存储说明 ---- */
+.s-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 12px 0 0;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--fg-muted);
+}
+.s-note .ico { margin-top: 2px; flex: none; color: var(--fg-muted); }
+.s-note code {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--surface-3);
+  border: 1px solid var(--border);
+  color: var(--fg);
+}
+.s-note b { color: var(--fg); font-weight: 600; }
+.s-path {
+  margin: 6px 0 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--fg-muted);
+  word-break: break-all;
+}
+
+/* ============================ 用量（估算） ============================ */
+.u-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.u-head > div { flex: 1; min-width: 0; }
+.u-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+/* 「估算」必须显眼：一个实心小标签，不靠小字 */
+.u-est {
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--warn-soft);
+  border: 1px solid var(--warn);
+  color: var(--warn);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .04em;
+}
+:root[data-theme="light"] .u-est { color: #7c4a03; }
+.u-sub {
+  margin: 3px 0 0;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.u-total {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-2);
+}
+.u-total-main {
+  display: flex;
+  align-items: baseline;
+  gap: 1px;
+  font-size: 27px;
+  font-weight: 650;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -.01em;
+}
+.u-cur { font-size: 15px; font-weight: 500; color: var(--fg-muted); }
+.u-total-sub {
+  font-size: 12px;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.u-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 26px 14px 30px;
+  text-align: center;
+  color: var(--fg-muted);
+}
+.u-empty .ico { width: 24px; height: 24px; color: var(--fg-muted); }
+.u-empty p { margin: 6px 0 0; font-size: 13px; font-weight: 500; color: var(--fg); }
+.u-empty span { font-size: 12px; line-height: 1.65; max-width: 380px; }
+
+.u-sections { display: flex; flex-direction: column; gap: 14px; margin-bottom: 16px; }
+.u-sec h4 {
+  margin: 0 0 7px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg-muted);
+}
+.u-range {
+  margin-left: 6px;
+  font-weight: 400;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+.u-rows { display: flex; flex-direction: column; gap: 2px; }
+.u-row {
+  display: grid;
+  grid-template-columns: 88px 1fr auto;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 2px;
+  font-size: 12.5px;
+  border-bottom: 1px solid var(--border);
+}
+.u-row:last-child { border-bottom: 0; }
+.u-row-k { color: var(--fg); font-weight: 500; }
+.u-row-v {
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.u-row-c {
+  color: var(--fg);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+
+/* 天数条：纯 CSS 宽度，不用图表库 */
+.u-bars { display: flex; flex-direction: column; gap: 5px; }
+.u-bar {
+  display: grid;
+  grid-template-columns: 42px 1fr 58px;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+.u-bar-d {
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.u-bar-track {
+  position: relative;
+  height: 9px;
+  border-radius: 5px;
+  background: var(--surface-3);
+  overflow: hidden;
+}
+.u-bar-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 5px;
+  background: var(--accent);
+  transition: width .3s var(--ease);
+}
+.u-bar-c {
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+
+/* ---- 单价 ---- */
+.u-pricing {
+  padding: 13px 14px 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-2);
+}
+.u-pricing-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+.u-pricing-head h4 {
+  margin: 0;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.u-pricing-head .s-hint { margin: 0; }
+.u-pgrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.u-pitem {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.u-pitem > span:first-child {
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+.u-pinput {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 34px;
+  padding: 0 9px;
+  border: 1px solid var(--border-2);
+  border-radius: var(--r-btn);
+  background: var(--surface);
+}
+.u-pinput:focus-within { border-color: var(--accent-line); box-shadow: var(--ring); }
+.u-pinput em { font-style: normal; font-size: 12px; color: var(--fg-muted); }
+.u-pinput input {
+  flex: 1;
+  min-width: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+.u-pinput input:focus { outline: none; }
+.u-pinput i {
+  font-style: normal;
+  font-size: 11px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+  flex: none;
+}
+/* 去掉 number 输入的上下箭头，避免 20px 宽的数字框被挤爆 */
+.u-pinput input::-webkit-outer-spin-button,
+.u-pinput input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.u-pinput input[type="number"] { -moz-appearance: textfield; appearance: textfield; }
+
+/* ---- 窄屏 ---- */
+@media (max-width: 720px) {
+  .settings-wrap { padding: 0; align-items: stretch; }
+  .settings {
+    max-width: none;
+    max-height: none;
+    height: 100%;
+    border-radius: 0;
+    border: 0;
+  }
+  .sview { padding: 14px 14px 28px; }
+  .settings-head { padding: 11px 10px 11px 14px; }
+  .settings-tabs { padding: 6px 10px 0; }
+  .stab { padding: 8px 8px 10px; font-size: 12.5px; }
+}
+
+@media (max-width: 560px) {
+  .u-pgrid { grid-template-columns: 1fr; }
+  .u-row { grid-template-columns: 76px 1fr auto; gap: 8px; }
+  .u-total-main { font-size: 24px; }
+  .s-actions .btn { flex: 1 1 auto; justify-content: center; }
+}

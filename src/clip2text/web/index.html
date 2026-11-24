@@ -49,6 +49,10 @@
     <symbol id="i-scan" viewBox="0 0 24 24"><path d="M4.5 8.6V6.3a1.8 1.8 0 0 1 1.8-1.8h2.3"/><path d="M15.4 4.5h2.3a1.8 1.8 0 0 1 1.8 1.8v2.3"/><path d="M19.5 15.4v2.3a1.8 1.8 0 0 1-1.8 1.8h-2.3"/><path d="M8.6 19.5H6.3a1.8 1.8 0 0 1-1.8-1.8v-2.3"/><path d="M8.6 10.4h6.8"/><path d="M8.6 13.8h4.4"/></symbol>
     <symbol id="i-quote" viewBox="0 0 24 24"><path d="M9.9 7.4c-2.7 1.6-4.1 4.1-4.1 7.2 0 2 1.1 3.2 2.8 3.2 1.5 0 2.6-1.1 2.6-2.6 0-1.4-1-2.4-2.4-2.4"/><path d="M19.2 7.4c-2.7 1.6-4.1 4.1-4.1 7.2 0 2 1.1 3.2 2.8 3.2 1.5 0 2.6-1.1 2.6-2.6 0-1.4-1-2.4-2.4-2.4"/></symbol>
     <symbol id="i-tag" viewBox="0 0 24 24"><path d="M4.6 11.3V5.9a1.3 1.3 0 0 1 1.3-1.3h5.4a1.3 1.3 0 0 1 .9.4l6.9 6.9a1.3 1.3 0 0 1 0 1.8l-5.4 5.4a1.3 1.3 0 0 1-1.8 0l-6.9-6.9a1.3 1.3 0 0 1-.4-.9z"/><path d="M8.4 8.4h.01"/></symbol>
+    <symbol id="i-setting" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.1"/><path d="M19.2 14.7a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1.03 1.55v.17a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1.1-1.55 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.55-1.03H2.6a2 2 0 1 1 0-4h.09A1.7 1.7 0 0 0 4.7 8.6a1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34H9.2a1.7 1.7 0 0 0 1.03-1.55V2.6a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1.03 1.55 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87v.09a1.7 1.7 0 0 0 1.55 1.03h.17a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.55 1.03z"/></symbol>
+    <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2.8 12S6.4 5.8 12 5.8 21.2 12 21.2 12 17.6 18.2 12 18.2 2.8 12 2.8 12z"/><circle cx="12" cy="12" r="2.7"/></symbol>
+    <symbol id="i-eye-off" viewBox="0 0 24 24"><path d="M9.9 5.2A8.6 8.6 0 0 1 12 4.9c5.6 0 9.2 7.1 9.2 7.1a16 16 0 0 1-2.5 3.4"/><path d="M6.5 6.6A15.9 15.9 0 0 0 2.8 12S6.4 19.1 12 19.1a8.9 8.9 0 0 0 4.2-1"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/><path d="M3.4 3.4l17.2 17.2"/></symbol>
+    <symbol id="i-key" viewBox="0 0 24 24"><circle cx="8.2" cy="15.8" r="3.6"/><path d="M10.8 13.2l8-8"/><path d="M16.8 7.2l2 2"/><path d="M14.4 9.6l2 2"/></symbol>
   </defs>
 </svg>
 
@@ -71,6 +75,9 @@
 
     <div class="topbar-actions">
       <div class="caps" id="caps" title="本机能力"><span class="caps-ghost">检测能力…</span></div>
+      <button class="iconbtn" id="settingsBtn" type="button" title="设置（API Key / 用量）" aria-label="打开设置面板" aria-haspopup="dialog" aria-expanded="false">
+        <svg class="ico" aria-hidden="true"><use href="#i-setting"></use></svg>
+      </button>
       <button class="iconbtn" id="themeBtn" type="button" title="切换深浅色" aria-label="切换深浅色">
         <svg class="ico" aria-hidden="true"><use href="#i-moon"></use></svg>
       </button>
@@ -355,6 +362,188 @@
       <kbd>Esc</kbd>
     </div>
     <div class="palette-list" id="paletteList" role="listbox" aria-label="命令"></div>
+  </div>
+</div>
+
+<!-- 设置：模型 / API Key / 用量 -->
+<div class="settings-wrap" id="settingsWrap" hidden>
+  <div class="settings" id="settingsDialog" role="dialog" aria-modal="true"
+    aria-labelledby="settingsTitle" tabindex="-1">
+    <header class="settings-head">
+      <svg class="ico" aria-hidden="true"><use href="#i-setting"></use></svg>
+      <h2 id="settingsTitle">设置</h2>
+      <span class="settings-spacer"></span>
+      <button class="iconbtn" id="settingsClose" type="button" title="关闭（Esc）" aria-label="关闭设置">
+        <svg class="ico" aria-hidden="true"><use href="#i-x"></use></svg>
+      </button>
+    </header>
+
+    <div class="settings-tabs" role="tablist" aria-label="设置分区">
+      <button class="stab on" id="stabModel" type="button" role="tab"
+        aria-selected="true" aria-controls="sviewModel" data-stab="model">模型与 API Key</button>
+      <button class="stab" id="stabUsage" type="button" role="tab"
+        aria-selected="false" aria-controls="sviewUsage" data-stab="usage" tabindex="-1">用量<span class="stab-badge">估算</span></button>
+    </div>
+
+    <div class="settings-body">
+
+      <!-- ==================== A. 模型配置 ==================== -->
+      <section class="sview" id="sviewModel" role="tabpanel" aria-labelledby="stabModel">
+        <p class="s-lede">内容解析与 AI 改写需要一个大模型。</p>
+        <div class="s-banner" id="sModelState" hidden></div>
+
+        <div class="s-block">
+          <div class="s-block-head">
+            <h3>方式一 · 任意 OpenAI 兼容服务</h3>
+            <span class="s-tag" id="sLlmSource" hidden></span>
+          </div>
+          <div class="s-field">
+            <label for="sBaseUrl">Base URL</label>
+            <input class="input" id="sBaseUrl" type="text" inputmode="url" spellcheck="false"
+              autocomplete="off" placeholder="https://api.deepseek.com">
+          </div>
+          <div class="s-field">
+            <label for="sApiKey">API Key</label>
+            <div class="s-key">
+              <input class="input" id="sApiKey" type="password" spellcheck="false"
+                autocomplete="new-password" autocapitalize="off" autocorrect="off"
+                aria-describedby="sApiKeyHint" placeholder="sk-…">
+              <button class="s-eye" id="sApiKeyEye" type="button" aria-label="显示 Key" aria-pressed="false">
+                <svg class="ico" aria-hidden="true"><use href="#i-eye"></use></svg>
+              </button>
+            </div>
+            <p class="s-hint" id="sApiKeyHint">留空表示不修改已保存的 Key</p>
+          </div>
+          <div class="s-field">
+            <label for="sModel">模型名</label>
+            <input class="input" id="sModel" type="text" spellcheck="false" autocomplete="off"
+              placeholder="deepseek-chat">
+          </div>
+          <div class="s-actions">
+            <button class="btn btn-primary btn-sm" id="sLlmSave" type="button">保存</button>
+            <button class="btn btn-quiet btn-sm btn-danger" id="sLlmClear" type="button">清除</button>
+          </div>
+          <div class="s-error" id="sLlmError" role="alert" hidden></div>
+        </div>
+
+        <div class="s-block">
+          <div class="s-block-head">
+            <h3>方式二 · 只配 DeepSeek</h3>
+            <span class="s-tag" id="sDsSource" hidden></span>
+          </div>
+          <p class="s-block-note">语音识别也共用它；只填这一处也能用。</p>
+          <div class="s-field">
+            <label for="sDsKey">API Key</label>
+            <div class="s-key">
+              <input class="input" id="sDsKey" type="password" spellcheck="false"
+                autocomplete="new-password" autocapitalize="off" autocorrect="off"
+                aria-describedby="sDsKeyHint" placeholder="sk-…">
+              <button class="s-eye" id="sDsKeyEye" type="button" aria-label="显示 Key" aria-pressed="false">
+                <svg class="ico" aria-hidden="true"><use href="#i-eye"></use></svg>
+              </button>
+            </div>
+            <p class="s-hint" id="sDsKeyHint">留空表示不修改已保存的 Key</p>
+          </div>
+          <div class="s-actions">
+            <button class="btn btn-primary btn-sm" id="sDsSave" type="button">保存</button>
+            <button class="btn btn-quiet btn-sm btn-danger" id="sDsClear" type="button">清除</button>
+          </div>
+          <div class="s-error" id="sDsError" role="alert" hidden></div>
+        </div>
+
+        <div class="s-block s-block-test">
+          <div class="s-test-row">
+            <button class="btn btn-quiet btn-sm" id="sTestBtn" type="button">
+              <svg class="ico" aria-hidden="true"><use href="#i-refresh"></use></svg>测试连接
+            </button>
+            <span class="s-test-out" id="sTestOut" role="status" aria-live="polite"></span>
+          </div>
+          <p class="s-hint" id="sTestHint" hidden></p>
+        </div>
+
+        <p class="s-note">
+          <svg class="ico" aria-hidden="true"><use href="#i-key"></use></svg>
+          <span>Key 只存在本机 <code>.data/settings.json</code>，不会上传到任何服务器。<br>
+          改动立即生效，不用重启服务。</span>
+        </p>
+        <p class="s-path" id="sConfigPath" hidden></p>
+      </section>
+
+      <!-- ==================== B. 用量 ==================== -->
+      <section class="sview" id="sviewUsage" role="tabpanel" aria-labelledby="stabUsage" hidden>
+        <div class="u-head">
+          <div>
+            <h3 class="u-title">用量 <span class="u-est">估算</span></h3>
+            <p class="u-sub" id="uSub">统计最近 30 天</p>
+          </div>
+          <button class="iconbtn" id="uRefresh" type="button" title="刷新用量" aria-label="刷新用量">
+            <svg class="ico" aria-hidden="true"><use href="#i-refresh"></use></svg>
+          </button>
+        </div>
+
+        <div class="u-total" id="uTotal">
+          <div class="u-total-main"><span class="u-cur">¥</span><span id="uTotalCost">—</span></div>
+          <div class="u-total-sub" id="uTotalSub">还没有使用记录</div>
+        </div>
+
+        <div class="u-empty" id="uEmpty" hidden>
+          <svg class="ico" aria-hidden="true"><use href="#i-clock"></use></svg>
+          <p>还没有使用记录</p>
+          <span>转写、识别图片或跑一次解析之后，这里会显示估算消耗。</span>
+        </div>
+
+        <div class="u-sections" id="uSections" hidden>
+          <div class="u-sec">
+            <h4>按类型</h4>
+            <div class="u-rows" id="uKinds"></div>
+          </div>
+          <div class="u-sec">
+            <h4>每天消耗<span class="u-range" id="uDaysLabel"></span></h4>
+            <div class="u-bars" id="uBars"></div>
+          </div>
+        </div>
+
+        <form class="u-pricing" id="uPricingForm">
+          <div class="u-pricing-head">
+            <h4>单价设置</h4>
+            <span class="s-hint">改完按新单价重算</span>
+          </div>
+          <div class="u-pgrid">
+            <label class="u-pitem">
+              <span>语音识别</span>
+              <span class="u-pinput"><em>¥</em><input class="input" id="pAsr" type="number" min="0" step="0.01"
+                inputmode="decimal" autocomplete="off" aria-label="语音识别单价，元每小时"><i>/小时</i></span>
+            </label>
+            <label class="u-pitem">
+              <span>OCR</span>
+              <span class="u-pinput"><em>¥</em><input class="input" id="pOcr" type="number" min="0" step="0.0001"
+                inputmode="decimal" autocomplete="off" aria-label="OCR 单价，元每张"><i>/张</i></span>
+            </label>
+            <label class="u-pitem">
+              <span>输入</span>
+              <span class="u-pinput"><em>¥</em><input class="input" id="pIn" type="number" min="0" step="0.01"
+                inputmode="decimal" autocomplete="off" aria-label="输入单价，元每百万 token"><i>/百万token</i></span>
+            </label>
+            <label class="u-pitem">
+              <span>输出</span>
+              <span class="u-pinput"><em>¥</em><input class="input" id="pOut" type="number" min="0" step="0.01"
+                inputmode="decimal" autocomplete="off" aria-label="输出单价，元每百万 token"><i>/百万token</i></span>
+            </label>
+          </div>
+          <div class="s-actions">
+            <button class="btn btn-quiet btn-sm" id="uPricingSave" type="submit">保存单价</button>
+          </div>
+          <div class="s-error" id="uPricingError" role="alert" hidden></div>
+        </form>
+
+        <p class="s-note">
+          <svg class="ico" aria-hidden="true"><use href="#i-alert"></use></svg>
+          <span>这是<b>估算</b>，按上面的单价与记录的时长 / token 数折算，不是服务商账单。
+          实际扣费以各家控制台为准。</span>
+        </p>
+      </section>
+
+    </div>
   </div>
 </div>
 

@@ -1,12 +1,38 @@
-"""集中配置。所有字段都有默认值，因此不建 .env 也能启动。"""
+"""集中配置。所有字段都有默认值，因此不建 .env 也能启动。
+
+配置三层（契约 docs/SETTINGS-CONTRACT.md §3）
+    代码默认值  <  .env / 环境变量  <  `.data/settings.json`（界面写入）
+
+`Settings()` 只吃前两层（pydantic-settings 本来就这么工作），
+第三层在 `get_settings()` 里显式 apply —— 不去改 BaseSettings 的
+source 顺序（那要 monkeypatch 内部实现，脆弱且难测）。
+"""
 
 from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
+from typing import Any
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from .settings_store import apply_overrides, load_overrides, settings_path
+
+# 用量估算单价（契约 §5）。用户可在网页「设置 → 用量 → 单价」里改，
+# 改完写进 .data/settings.json 的 pricing 字段并立即生效。
+# 单位：元/小时音频、元/张图、元/百万 token。
+# 这是**估算**，不是账单：真实计费以各服务商的账单为准。
+DEFAULT_PRICING: dict[str, float] = {
+    "asr_per_hour": 0.78,
+    "ocr_per_image": 0.0015,
+    "llm_input_per_mtok": 1.0,
+    "llm_output_per_mtok": 4.0,
+}
+
+
+def _default_pricing() -> dict[str, float]:
+    return dict(DEFAULT_PRICING)
 
 
 class Settings(BaseSettings):
@@ -49,6 +75,12 @@ class Settings(BaseSettings):
     deepseek_api_key: str = ""
     deepseek_base_url: str = "https://api.deepseek.com"
 
+    # ---------- 用量估算单价 ----------
+    # settings.json 的 pricing 字段会整体合并覆盖到这里（见 settings_store）。
+    # 用 dict 而不是四个独立字段：单价是「用户可自由增减的一组数」，
+    # 契约里也是 dict[str, float]，多个字段反而要在三处同步维护。
+    pricing: dict[str, float] = Field(default_factory=_default_pricing)
+
     # ---------- 链接解析 ----------
     # 默认开启：这个工具的产品定位是「贴链接 → 出文字」（播客、知识科普、
     # 读书、讲座），上传文件只是并行能力，不该是唯一入口。
@@ -75,6 +107,28 @@ class Settings(BaseSettings):
     # 每段转写结果落盘到 work/<task_id>/checkpoint.json，
     # 进程重启后跳过已完成的分片，而不是从头再跑一遍。
     resume_enabled: bool = True
+
+    @field_validator("pricing")
+    @classmethod
+    def _check_pricing(cls, v: dict[str, float] | None) -> dict[str, float]:
+        """保证 dict 里四个已知单价永远齐全。
+
+        `Settings(pricing={"asr_per_hour": 2})` 这种半份配置不该让
+        另外三个单价变成「缺失」——估算需要四个数才能算，缺一个就会
+        静默少算一笔钱。
+        """
+        merged = _default_pricing()
+        for name, value in (v or {}).items():
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                continue
+            if number != number or number in (float("inf"), float("-inf")):  # NaN / inf
+                continue
+            if number < 0:
+                continue
+            merged[str(name)] = number
+        return merged
 
     @field_validator("ffmpeg_mode")
     @classmethod
@@ -138,10 +192,57 @@ class Settings(BaseSettings):
 
 
 @lru_cache
-def get_settings() -> Settings:
+def _env_settings() -> Settings:
+    """只吃环境变量 + .env 的基线（不含 settings.json 覆盖）。
+
+    单独缓存一份，是因为「这个 key 到底来自界面还是来自 .env」
+    需要拿生效值和基线值对比才能回答（契约 §2.5 的 source 字段）。
+    重复构造 Settings() 每次都要解析 .env，没必要。
+    """
     return Settings()
 
 
+def get_settings() -> Settings:
+    """生效配置 = 环境变量/.env 基线 + settings.json 覆盖。
+
+    settings.json 的路径取自基线里的 data_dir：JSON 文件本身就在
+    .data 目录下，所以不能靠它自己来定位自己。
+    """
+    base = _env_settings()
+    overrides = load_overrides(base.data_dir)
+    if not overrides:
+        return base
+    return apply_overrides(base, overrides)
+
+
+def env_settings() -> Settings:
+    """基线配置（只读环境变量/.env）。给 settings 视图判断 source 用。"""
+    return _env_settings()
+
+
+def settings_file(data_dir: Path | str | None = None) -> Path:
+    """settings.json 的绝对路径（给界面显示「存哪了」）。"""
+    return settings_path(data_dir if data_dir is not None else _env_settings().data_dir)
+
+
 def reset_settings_cache() -> None:
-    """仅供测试使用：让下一次 get_settings() 重新读取环境变量。"""
-    get_settings.cache_clear()
+    """让下一次 get_settings() 重新读取环境变量与 settings.json。
+
+    缓存只挂在 `_env_settings()` 上（settings.json 每次都要重读，
+    否则外部编辑文件后进程看不到）。所以这里清的是基线缓存。
+    仅供测试**和热更新**使用：界面写完配置后必须调用它（或
+    AppState.reload_settings()），否则老对象会生效到进程重启（契约 §3）。
+    """
+    _env_settings.cache_clear()
+
+
+def reload_settings() -> Settings:
+    """丢弃缓存并返回重新解析后的配置。"""
+    reset_settings_cache()
+    return get_settings()
+
+
+def effective_overrides(data_dir: Path | str | None = None) -> dict[str, Any]:
+    """当前 settings.json 的内容（已清洗）。给设置接口和测试用。"""
+    return load_overrides(data_dir if data_dir is not None else _env_settings().data_dir)
+

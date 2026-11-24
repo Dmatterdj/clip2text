@@ -38,6 +38,7 @@ from .db import Database
 from .media import FFmpegError, extract_audio, probe_duration, slice_audio, split_audio
 from .media.chunker import Chunk
 from .models import Segment, Stage, Task, TaskStatus, utcnow
+from .usage import record_async
 
 log = logging.getLogger(__name__)
 
@@ -450,6 +451,7 @@ class Pipeline:
                 f"（其中 {resumed} 段来自检查点）" if resumed else "",
                 len(full_text),
             )
+            await self._record_asr_usage(task, engine.name, duration, resumed, total)
             return task
 
         except asyncio.CancelledError:
@@ -477,6 +479,33 @@ class Pipeline:
             self._cancelled.discard(task_id)
             # 保留源文件，但清掉中间产物（分片很占空间）
             shutil.rmtree(work_dir / "chunks", ignore_errors=True)
+
+    # ---------------- 用量埋点 ----------------
+    async def _record_asr_usage(
+        self,
+        task: Task,
+        engine_name: str,
+        duration: float | None,
+        resumed: int,
+        total: int,
+    ) -> None:
+        """转写成功后记一笔 ASR 用量（契约 §7）。
+
+        只在「确实跑过 ASR」时记：整单命中检查点（resumed == total）意味
+        这一轮一个字都没喂给引擎，再记满时长就是凭空的账。
+        部分命中仍然记全额 —— 分片是按整段音频的时长切出来的，
+        省下的那部分占比小，精确按片数折算反而需要额外维护每片时长。
+        """
+        if total and resumed >= total:
+            log.debug("任务 %s 全部命中检查点，跳过 ASR 用量记录", task.id)
+            return
+        await record_async(
+            self.db,
+            "asr",
+            task_id=task.id,
+            model=engine_name,
+            audio_seconds=float(duration or task.duration or 0.0),
+        )
 
     async def _run_ocr(self, task: Task, src: Path, work_dir: Path) -> None:
         """图片 OCR 分支。
@@ -522,6 +551,14 @@ class Pipeline:
             error_message=None,
         )
         log.info("任务 %s OCR 完成：%d 张图，%d 字", task.id, len(images), len(result.text))
+        # 按「送去识别的图片张数」计费，不是识别出的文本行数
+        await record_async(
+            self.db,
+            "ocr",
+            task_id=task.id,
+            model=result.engine or "ocr",
+            images=len(images),
+        )
 
     def _download_images(
         self, task: Task, urls: list[str], work_dir: Path

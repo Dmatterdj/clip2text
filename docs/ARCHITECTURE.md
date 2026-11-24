@@ -442,3 +442,126 @@ reduce 只看到摘要，token 成本可控。
 - 章节粒度 = 窗口粒度：reduce 只能引用已有窗口，无法把一窗拆成多章
 - 窗口边界按分句切分，不保证落在语义边界上
 - 金句去重按「去空白后完全相同」，近义重复仍会保留
+
+---
+
+## 12. 前端可配置 API Key + 用量统计
+
+契约：`docs/SETTINGS-CONTRACT.md`。本节只记「为什么这么做」和踩过的坑。
+
+### 配置三层，纵深覆盖
+
+```
+代码默认值  <  .env / 环境变量  <  .data/settings.json（界面写入）
+```
+
+不改 pydantic-settings 的 source 顺序（那要 monkeypatch 内部实现，脆弱且难测），
+而是在 `config.get_settings()` 里显式叠一层：
+
+```python
+def get_settings():
+    base = _env_settings()              # 环境变量 + .env，带 lru_cache
+    overrides = load_overrides(base.data_dir)   # 每次重读
+    return apply_overrides(base, overrides) if overrides else base
+```
+
+`apply_overrides()` 是**逐字段**判断「这一层有没有值」，有才覆盖。
+所以 JSON 里只写 `api_key` 时，`base_url` / `model` 仍然来自 `.env`。
+空字符串等于「没配置」——写空等于删掉，不留第三种状态。
+
+`settings.json` 的路径取自基线里的 `data_dir`：文件自己就在 `.data` 下，
+不能靠它定位自己。文件读坏 / 类型不对 / 有未知分节时**只 warning 不抛**，
+退回 `.env`，用户还能从界面重新保存。
+
+### 热更新：必须真的立刻生效
+
+`AppState` 里最容易被搞坏的是「读构造时的快照」。现在：
+
+- `_current_stamp()` 取 `settings.json` 的 `(mtime_ns, size)`
+- `sync_settings()` 每个请求 stat 一次，变了就 `reload_settings()`
+  （外部 `vim` 编辑也能捡到，不必走 API）
+- `reload_settings()` 只覆盖 `HOT_FIELDS`（llm / deepseek / pricing），
+  **不动** `data_dir`、并发数这类字段，否则正在跑的任务会找不到自己的目录
+- 然后重建 `pipeline.engines`（缓存了旧配置）、`llm`、`analysis_llm`
+- `analysis_config()` 每次请求都 `sync_settings()` + 重新 `resolve_analysis_llm()`
+- `capabilities` 也先 sync，前端靠它刷新 tab 可用状态
+
+`reset_settings_cache()` 只清 `_env_settings` 的缓存 —— `settings.json`
+本来就每次重读，不需要缓存。
+
+### 安全：key 只进不出
+
+| 要求 | 实现 |
+|---|---|
+| GET 只给掩码 | `mask_key()` 是唯一出口；≥12 字符前 6 后 4 中间固定 8 个 `·`，<12 全掩码 |
+| 响应体无原文 | `LLMSettings` 模型里根本没有 `api_key` 字段，只有 `api_key_masked` |
+| 日志无原文 | 所有 `log.*` 只记「哪个分节改了」「key 设了没有」 |
+| 落盘 0600 | `os.open(..., 0o600)` 创建 + 写完 `chmod` 双保险（open 的 mode 对已存在文件无效） |
+| 写入前校验 | base_url 必须 http/https 且无空白；model ≤100；key ≤500，不合法 400 |
+
+`POST /settings/test` 有一个额外发现：**上游的报错 body 可能回显 key**。
+DeepSeek 自己会打码（`Your api key: ****9c1b`），但不能指望每家网关都这样。
+所以返回前用 `_redact_secret()` 把当前 key 替换成掩码再交给前端。
+
+### 用量：只追加的账本
+
+`usage_events` 表只追加、只聚合，**删任务不删**这里的行
+（删任务不该抹掉已经花过的钱）。清空只有 `DELETE /api/v1/usage`。
+
+埋点的四个位置都走同一个 `usage.record()`，失败只 `log.warning`：
+
+| 位置 | kind | 记什么 | 特殊处理 |
+|---|---|---|---|
+| `pipeline.run()` 转写成功 | `asr` | `task.duration` + `engine.name` | 整单命中检查点（`resumed >= total`）时**不记**，这轮没喂给引擎 |
+| `pipeline._run_ocr()` 成功 | `ocr` | `len(images)` + `result.engine` | 按送去识别的张数，不是识别出的行数 |
+| `analysis.build_job()` 完成 | `analysis` | `Analysis.token_usage` | FAILED 也记（map 阶段花了 token 才失败） |
+| `llm.stream_rewrite()` 结束 | `rewrite` | 流式 usage 帧 | 请求带 `stream_options.include_usage`；没有就记 0，**不猜**；生成器被提前关闭也在 `finally` 上报（上游已计费） |
+
+改写走 `llm.stream_rewrite()`，那边拿不到 `Database`，所以在 `llm` 里留了
+模块级 sink（`set_usage_sink`），由 `AppState` 构造时接上、shutdown 时断开。
+
+### 计价：估算，不假装精确
+
+`estimate_cost()` 就是契约 §5 那条公式，单价来自 `DEFAULT_PRICING`
+（可被 `settings.json` 的 `pricing` 覆盖）。费用保留 **6 位小数**：
+OCR 单张 0.0015 元，四舍五入到 2 位会变成 0.00，让用户以为图片识别免费。
+
+### 时区：契约没写，但会算错账
+
+SQLite 的 `date()` **直接截取日期部分、忽略时区偏移**：
+
+```sql
+SELECT date('2026-11-23T23:59:00+00:00');            -- 2026-11-23
+SELECT date('2026-11-23T23:59:00+00:00', '+8 hours');-- 2026-11-24  ← 正确
+SELECT date('2026-11-23T23:59:00+00:00', '-8 hours');-- 2026-11-23  ← 方向反了
+```
+
+我们存的是 UTC（`utcnow()`），所以转本地要**加**偏移。
+不硬编码 +8（别的时区部署会全错），用 `local_offset_minutes()`
+从 `astimezone().utcoffset()` 算；用 **minutes** 不用 hours
+（印度 +330、尼泊尔 +345 这类半小时时区，`'-5.5 hours'` 实测无效）。
+
+`by_day` 的「最近 N 天」边界也按**本地**日期推：东八区用户
+在 00:00–08:00 之间，UTC 的今天还是昨天，用 UTC 推会少算一天。
+
+### HTTP
+
+| 接口 | 行为 |
+|---|---|
+| `GET /api/v1/settings` | 200 + `SettingsView`（key 只有掩码） |
+| `PUT /api/v1/settings/llm` | 空字符串 / null / 不传 = 保持不变；响应同 GET |
+| `PUT /api/v1/settings/deepseek` | 同上 |
+| `DELETE /api/v1/settings/llm` | 清掉该分节，**回落到 .env** |
+| `PUT /api/v1/settings/pricing` | 支持四个键直接给，也支持 `{"pricing": {...}}` |
+| `POST /api/v1/settings/test` | 发一次最小 chat 请求；失败返回 `ok=false` + 人话原因（不是 500） |
+| `GET /api/v1/usage?days=30` | 全量 total + 最近 N 天 by_day + by_kind + by_model |
+| `DELETE /api/v1/usage` | 清空账本（唯一会删 usage 的入口） |
+
+`GET /api/v1/capabilities` 新增 `settings: {editable, config_path, hot_reload}`
+和 `usage: {available}`，旧字段不变。
+
+### 已知限制
+
+- `by_day` 的「天」用服务端进程的时区；跨时区访问（比如远程连到别的机器）会按服务端算
+- `total.estimated_cost` 是全量估算，`by_day` 只含最近 N 天，两者不能直接对账
+- 部分命中检查点的任务仍按整段时长记 ASR（精确折算要额外维护每片时长）

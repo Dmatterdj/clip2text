@@ -128,6 +128,12 @@ const state = {
   histTotal: 0,
   paletteIndex: 0,
   paletteItems: [],
+  /* 设置面板：当前分区、最近一次读到的配置/用量、接口错误（后端可能还没上线） */
+  settingsTab: 'model',
+  settings: null,
+  settingsError: '',
+  usage: null,
+  usageError: '',
 };
 
 function esc(s) {
@@ -430,11 +436,13 @@ function renderNotices(caps) {
   // LLM 未配置也要说一声。
   // 之前「解析」和「改写」在不可用时整个隐藏，用户既不知道有这个功能，
   // 也不知道差什么才能用 —— 等于功能不存在。现在改成显式告知。
+  // 入口说明必须指向界面上的齿轮：写 .env 和「重启服务」正是上个迭代
+  // 让人以为功能不存在的原因。
   if (!analysisAvailable(caps)) {
     items.push(noticeHtml('', 'spark',
-      `<b>内容解析和 AI 改写未启用。</b>配置 <code>LLM_BASE_URL</code> + <code>LLM_MODEL</code> `
-      + `（可指向 Ollama 等本地服务），或配置 <code>DEEPSEEK_API_KEY</code> 后重启服务，`
-      + `即可对长文本生成摘要、章节与要点。`
+      `<b>内容解析和 AI 改写未启用。</b>点右上角的齿轮，在「模型与 API Key」里填一个`
+      + ` OpenAI 兼容服务（Base URL / Key / 模型名），或者只填 DeepSeek 的 Key，`
+      + `保存后立即生效，不用重启。`
       + (analysisReason(caps) ? `<br><span class="hint">${esc(analysisReason(caps))}</span>` : '')));
   }
 
@@ -1384,15 +1392,15 @@ function renderAnalysisEmpty() {
       <div class="ana-setup">
         <p class="ana-setup-title">开启方式（二选一）</p>
         <p class="ana-setup-line">
-          <b>方式一：</b>在 <code>.env</code> 里配置任意 OpenAI 兼容服务
-          <br><code>LLM_BASE_URL=</code> <code>LLM_MODEL=</code> <code>LLM_API_KEY=</code>
-          <br><span class="hint">可指向本地 Ollama，例如 LLM_BASE_URL=http://localhost:11434/v1</span>
+          <b>方式一：</b>点右上角的齿轮，在「模型与 API Key」里填写任意 OpenAI 兼容服务
+          <br><span class="hint">Base URL + API Key + 模型名，例如 https://api.deepseek.com 与 deepseek-chat；
+          也可以指向本地 Ollama（http://localhost:11434/v1）</span>
         </p>
         <p class="ana-setup-line">
-          <b>方式二：</b>只配一个 <code>DEEPSEEK_API_KEY</code>
+          <b>方式二：</b>在同一个面板里只填一个 DeepSeek 的 API Key
           <br><span class="hint">会自动复用为分析模型（deepseek-chat），与语音识别共用同一个 key</span>
         </p>
-        <p class="ana-setup-line">改完 <code>.env</code> 后重启服务（<code>clip2text serve</code>）即可。</p>
+        <p class="ana-setup-line">保存后立即生效，<b>不用重启服务</b>。</p>
       </div>
       ${state.caps && state.caps.analysis && state.caps.analysis.reason
         ? `<p class="ana-empty-text hint">当前状态：${esc(state.caps.analysis.reason)}</p>` : ''}
@@ -2213,6 +2221,12 @@ const COMMANDS = [
     run: () => toggleTheme(),
   },
   {
+    id: 'settings',
+    label: '设置：API Key 与用量',
+    icon: 'setting',
+    run: () => openSettings(),
+  },
+  {
     id: 'history',
     label: '刷新历史记录',
     icon: 'refresh',
@@ -2284,9 +2298,655 @@ function runCommand(cmd) {
   }
 }
 
+/* ------------------------------------------------- 14. 设置：Key 与用量 */
+
+/*
+ * 为什么要有这块：
+ * 上一个迭代里，内容解析和 AI 改写要配 LLM 才能用，而配置只能改 .env 再重启，
+ * 普通用户根本走不到那一步 —— 在他们眼里功能就是不存在。
+ * 所以配置入口必须开在界面上：填完保存，立即生效，不用碰 .env、不用重启。
+ *
+ * 几条不可动摇的约束（见 docs/SETTINGS-CONTRACT.md）：
+ *   · 后端 GET 只返回掩码，前端也永远不把 key 原文写进 DOM 的常驻属性里
+ *   · Key 输入框留空保存 = 不修改（后端约定传空串即保持）
+ *   · Key 输入框 autocomplete="new-password"，别让浏览器密码管理器收走
+ *   · 错误必须显示在表单下方，不能只闪一个 toast
+ */
+
+const KIND_LABEL = {
+  asr: '语音识别',
+  ocr: '图片识别',
+  analysis: '内容解析',
+  rewrite: 'AI 改写',
+};
+
+/* 用量区展示多少天的条形。契约里 by_day 是 30 天，但 30 根条在一个弹层里太挤。 */
+const USAGE_BARS = 7;
+
+function fmtMoney(n) {
+  const v = Number(n) || 0;
+  if (!v) return '0.00';
+  if (v < 0.01) return v.toFixed(4);
+  return v.toFixed(2);
+}
+
+function fmtTok(n) {
+  const v = Math.round(Number(n) || 0);
+  return v.toLocaleString('en-US');
+}
+
+/* 音频时长写成 2h06m / 12m30s，别用 00:12:30 —— 在用量语境下更好读 */
+function fmtAudio(seconds) {
+  const t = Math.max(0, Math.round(Number(seconds) || 0));
+  if (!t) return '0';
+  const h = Math.floor(t / 3600);
+  const m = Math.floor((t % 3600) / 60);
+  const s = t % 60;
+  if (h) return `${h}h${String(m).padStart(2, '0')}m`;
+  if (m) return `${m}m${String(s).padStart(2, '0')}s`;
+  return `${s}s`;
+}
+
+/* 一行用量的「数量」列：每种 kind 关注的计量单位不一样 */
+function usageAmount(kind, b) {
+  const bucket = b || {};
+  if (kind === 'asr') return fmtAudio(bucket.audio_seconds);
+  if (kind === 'ocr') return `${Math.round(Number(bucket.images) || 0)} 张`;
+  const tok = (Number(bucket.prompt_tokens) || 0) + (Number(bucket.completion_tokens) || 0);
+  return tok ? `${fmtTok(tok)} tokens` : '—';
+}
+
+function showFormError(sel, msg) {
+  const el = $(sel);
+  if (!el) return;
+  if (!msg) { el.hidden = true; el.textContent = ''; return; }
+  el.textContent = String(msg);
+  el.hidden = false;
+}
+
+/* ---- 打开 / 关闭：锁定页面滚动 + 焦点管理 ---- */
+
+function openSettings(tab) {
+  const wrap = $('#settingsWrap');
+  if (!wrap || !wrap.hidden) {
+    if (!wrap.hidden && tab) setSettingsTab(tab);
+    return;
+  }
+  wrap.hidden = false;
+  document.body.classList.add('settings-open');
+  $('#settingsBtn').setAttribute('aria-expanded', 'true');
+
+  if (tab) setSettingsTab(tab);
+  else setSettingsTab(state.settingsTab || 'model');
+
+  /* 面板一打开就去拉：不能等用户点，否则「已配置 / 未配置」是空白的 */
+  loadSettings();
+  loadUsage();
+
+  const first = $('#sBaseUrl');
+  if (first && !first.closest('[hidden]')) first.focus();
+  else $('#settingsDialog').focus();
+}
+
+function closeSettings() {
+  const wrap = $('#settingsWrap');
+  if (!wrap || wrap.hidden) return;
+  wrap.hidden = true;
+  document.body.classList.remove('settings-open');
+  $('#settingsBtn').setAttribute('aria-expanded', 'false');
+  /* 焦点一律还到打开它的齿轮上。
+     不还的话，弹层一关焦点就掉到 body，键盘用户得从页首重新 Tab 一遍；
+     还到「关闭前聚焦的元素」听着更聪明，但那个元素多半在已隐藏的弹层里，
+     或者是个和这次操作无关的输入框 —— 还到触发按钮才是可预期的。 */
+  $('#settingsBtn').focus();
+}
+
+function setSettingsTab(name) {
+  const which = name === 'usage' ? 'usage' : 'model';
+  state.settingsTab = which;
+  $$('.stab').forEach((b) => {
+    const on = b.dataset.stab === which;
+    b.classList.toggle('on', on);
+    b.setAttribute('aria-selected', String(on));
+    b.tabIndex = on ? 0 : -1;
+  });
+  $('#sviewModel').hidden = which !== 'model';
+  $('#sviewUsage').hidden = which !== 'usage';
+  if (which === 'usage') {
+    /* 切到用量时按需再拉一次：用户可能刚跑完一个任务 */
+    if (!state.usage) loadUsage();
+  }
+}
+
+/* 焦点陷阱：设置面板是 aria-modal，Tab 不能跑到背后的页面上。
+   不做的话，键盘用户在弹层里 Tab 几下就「消失」到页面里了。 */
+function trapSettingsFocus(e) {
+  if (e.key !== 'Tab') return;
+  const box = $('#settingsDialog');
+  if (!box) return;
+  const focusables = $$(
+    'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), '
+    + 'textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    box,
+  ).filter((el) => el.offsetParent !== null || el === document.activeElement);
+  if (!focusables.length) return;
+  const first = focusables[0];
+  const last = focusables[focusables.length - 1];
+  if (!e.shiftKey && document.activeElement === last) {
+    e.preventDefault();
+    first.focus();
+  } else if (e.shiftKey && document.activeElement === first) {
+    e.preventDefault();
+    last.focus();
+  }
+}
+
+/* ---- 读配置 ---- */
+
+async function loadSettings() {
+  try {
+    const view = await api('/settings');
+    state.settings = view;
+    state.settingsError = '';
+    renderSettings(view);
+  } catch (err) {
+    state.settings = null;
+    /* 后端还没实现（404）也得能开面板：明确告诉用户接口不可用，
+       按钮禁用，而不是让整个面板炸掉、或者假装保存成功了。 */
+    state.settingsError = err.message;
+    renderSettings(null, err.message);
+  }
+}
+
+function sourceLabel(src) {
+  if (src === 'settings') return '界面配置';
+  if (src === 'env') return '来自环境变量';
+  return '';
+}
+
+function renderSettings(view, errMsg) {
+  const banner = $('#sModelState');
+  const llm = (view && view.llm) || {};
+  const ds = (view && view.deepseek) || {};
+
+  /* Base URL / 模型名可以回填（不是秘密）；Key 只回填空值 + 掩码 placeholder */
+  $('#sBaseUrl').value = llm.base_url || '';
+  $('#sModel').value = llm.model || '';
+  $('#sApiKey').value = '';
+  $('#sDsKey').value = '';
+  $('#sApiKey').type = 'password';
+  $('#sDsKey').type = 'password';
+  resetEye('#sApiKeyEye');
+  resetEye('#sDsKeyEye');
+
+  if (llm.api_key_set && llm.api_key_masked) {
+    $('#sApiKey').placeholder = llm.api_key_masked;
+    $('#sApiKeyHint').textContent = '已保存，留空保存 = 不修改。要替换就填入新的 Key。';
+  } else {
+    $('#sApiKey').placeholder = 'sk-…';
+    $('#sApiKeyHint').textContent = '还没有配置 Key。';
+  }
+  if (ds.api_key_set && ds.api_key_masked) {
+    $('#sDsKey').placeholder = ds.api_key_masked;
+    $('#sDsKeyHint').textContent = '已保存，留空保存 = 不修改。要替换就填入新的 Key。';
+  } else {
+    $('#sDsKey').placeholder = 'sk-…';
+    $('#sDsKeyHint').textContent = '还没有配置 Key。';
+  }
+
+  /* 来源标签：来自 env 时必须说清楚「你在界面上改会覆盖它」 */
+  const llmTag = $('#sLlmSource');
+  const dsTag = $('#sDsSource');
+  const ls = sourceLabel(llm.source);
+  const dst = sourceLabel(ds.source);
+  llmTag.hidden = !ls;
+  llmTag.textContent = ls;
+  llmTag.classList.toggle('env', llm.source === 'env');
+  dsTag.hidden = !dst;
+  dsTag.textContent = dst;
+  dsTag.classList.toggle('env', ds.source === 'env');
+
+  /* 配置状态的横幅 */
+  banner.hidden = false;
+  if (errMsg) {
+    /* 404 是最常见的一种（后端还没部署到这个版本），别把 "Not Found" 原文
+       甩给用户。其他错误照实显示，诊断信息对报 bug 有用。 */
+    const notFound = /404|Not Found/i.test(errMsg);
+    banner.className = 's-banner bad';
+    banner.innerHTML = '<svg class="ico" aria-hidden="true"><use href="#i-alert"></use></svg>'
+      + `<div><b>设置接口暂时不可用。</b>${notFound ? '这个版本的后端还没有配置接口（404）。' : esc(errMsg)}<br>`
+      + '<span class="s-banner-sub">界面已就绪，等后端上线后无需改动；'
+      + '这段时间仍然可以用 <code>.env</code> 配好再重启。</span></div>';
+    setSettingsEnabled(false);
+  } else {
+    setSettingsEnabled(true);
+    const ready = !!(view && view.analysis_ready);
+    if (ready) {
+      /* 这里拼的是纯文本片段，统一在最后 esc 一次。
+         别在片段里先 esc 一遍再整体 esc —— 模型名里带 & 会变成 &amp;amp;。 */
+      const parts = [];
+      if (llm.api_key_set) {
+        parts.push(`OpenAI 兼容服务${llm.model ? ` · ${llm.model}` : ''}`
+          + (llm.source === 'env' ? '（来自环境变量，保存后会覆盖它）' : ''));
+      }
+      if (ds.api_key_set) {
+        parts.push(`DeepSeek 兜底${ds.source === 'env' ? '（来自环境变量）' : ''}`);
+      }
+      if (!parts.length) parts.push('已从环境变量读取配置');
+      banner.className = 's-banner';
+      banner.innerHTML = '<svg class="ico" aria-hidden="true"><use href="#i-check"></use></svg>'
+        + `<div><b>已配置好，内容解析与 AI 改写可用。</b>${esc(parts.join('；'))}。</div>`;
+    } else {
+      banner.className = 's-banner warn';
+      banner.innerHTML = '<svg class="ico" aria-hidden="true"><use href="#i-alert"></use></svg>'
+        + '<div><b>还没配置。</b>下面两种方式<b>任选一个</b>即可：填一个 OpenAI 兼容服务，'
+        + '或只填 DeepSeek 的 Key。</div>';
+    }
+  }
+
+  const path = $('#sConfigPath');
+  if (view && view.config_path) {
+    path.hidden = false;
+    path.textContent = `配置文件：${view.config_path}`;
+  } else {
+    path.hidden = true;
+  }
+}
+
+/* 接口不可用时把会写数据的按钮全禁掉，避免用户点了以为成功 */
+function setSettingsEnabled(on) {
+  ['#sLlmSave', '#sLlmClear', '#sDsSave', '#sDsClear', '#sTestBtn', '#uPricingSave']
+    .forEach((sel) => {
+      const el = $(sel);
+      if (el) el.disabled = !on;
+    });
+}
+
+function resetEye(sel) {
+  const btn = $(sel);
+  if (!btn) return;
+  btn.setAttribute('aria-pressed', 'false');
+  btn.setAttribute('aria-label', '显示 Key');
+  const use = btn.querySelector('use');
+  if (use) use.setAttribute('href', '#i-eye');
+}
+
+/* ---- 显示 / 隐藏 Key ---- */
+
+function toggleKeyVisible(inputSel, btnSel) {
+  const input = $(inputSel);
+  const btn = $(btnSel);
+  if (!input || !btn) return;
+  const showing = input.type === 'password';
+  input.type = showing ? 'text' : 'password';
+  btn.setAttribute('aria-pressed', String(showing));
+  btn.setAttribute('aria-label', showing ? '隐藏 Key' : '显示 Key');
+  const use = btn.querySelector('use');
+  if (use) use.setAttribute('href', showing ? '#i-eye-off' : '#i-eye');
+}
+
+/* ---- 保存 / 清除 ---- */
+
+async function saveLLM() {
+  showFormError('#sLlmError', '');
+  const baseUrl = $('#sBaseUrl').value.trim();
+  const key = $('#sApiKey').value.trim();
+  const model = $('#sModel').value.trim();
+
+  if (!baseUrl) { showFormError('#sLlmError', 'Base URL 不能为空，例如 https://api.deepseek.com'); $('#sBaseUrl').focus(); return; }
+  if (!model) { showFormError('#sLlmError', '模型名不能为空，例如 deepseek-chat'); $('#sModel').focus(); return; }
+
+  const body = { base_url: baseUrl, model };
+  /* 留空 = 不修改。契约：传空串或不传都表示保持原值。 */
+  if (key) body.api_key = key;
+
+  const btn = $('#sLlmSave');
+  btn.disabled = true;
+  try {
+    const view = await api('/settings/llm', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    state.settings = view;
+    renderSettings(view);
+    toast('已生效');
+    /* tab 的可用状态来自 capabilities，必须重新拉一次，
+       否则用户填完了返回页面，解析 tab 还是「未启用」 */
+    await loadCapabilities();
+    if (state.settingsTab === 'usage') loadUsage();
+  } catch (err) {
+    showFormError('#sLlmError', err.message);
+    toast('保存失败', 'err');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+/* 清除走「点一次变确认」，和删除任务那套一致：不用 confirm() */
+const armed = { llm: null, ds: null };
+
+function armClear(which) {
+  const btn = which === 'llm' ? $('#sLlmClear') : $('#sDsClear');
+  if (!btn) return;
+  const original = '清除';
+  if (btn.dataset.armed === '1') {
+    btn.dataset.armed = '';
+    btn.classList.remove('btn-danger');
+    btn.textContent = original;
+    if (which === 'llm') clearLLM(); else clearDeepseek();
+    return;
+  }
+  btn.dataset.armed = '1';
+  btn.classList.add('btn-danger');
+  btn.textContent = '确认清除？';
+  clearTimeout(armed[which]);
+  armed[which] = setTimeout(() => {
+    if (!btn.isConnected || btn.dataset.armed !== '1') return;
+    btn.textContent = original;
+    btn.classList.remove('btn-danger');
+    btn.dataset.armed = '';
+  }, 3200);
+}
+
+async function clearLLM() {
+  showFormError('#sLlmError', '');
+  const btn = $('#sLlmClear');
+  btn.disabled = true;
+  try {
+    const view = await api('/settings/llm', { method: 'DELETE' });
+    state.settings = view;
+    renderSettings(view);
+    toast('已清除');
+    await loadCapabilities();
+  } catch (err) {
+    showFormError('#sLlmError', err.message);
+    toast('清除失败', 'err');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function saveDeepseek() {
+  showFormError('#sDsError', '');
+  const key = $('#sDsKey').value.trim();
+  if (!key) {
+    showFormError('#sDsError', '请填入 DeepSeek 的 API Key。（留空保存不会修改已保存的值）');
+    $('#sDsKey').focus();
+    return;
+  }
+  const btn = $('#sDsSave');
+  btn.disabled = true;
+  try {
+    const view = await api('/settings/deepseek', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ api_key: key }),
+    });
+    state.settings = view;
+    renderSettings(view);
+    toast('已生效');
+    await loadCapabilities();
+  } catch (err) {
+    showFormError('#sDsError', err.message);
+    toast('保存失败', 'err');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function clearDeepseek() {
+  showFormError('#sDsError', '');
+  const btn = $('#sDsClear');
+  btn.disabled = true;
+  try {
+    /* 优先 DELETE。契约只写了 PUT，但后端后来补了 DELETE /settings/deepseek；
+       先用 DELETE，404 再回退成 PUT 空 key —— 而 PUT 空 key 在后端是「不修改」，
+       所以那条路只能算降级，成功了也要说清楚。 */
+    let view = null;
+    try {
+      view = await api('/settings/deepseek', { method: 'DELETE' });
+    } catch (err) {
+      if (!/404|Not Found/i.test(err.message)) throw err;
+      view = await api('/settings/deepseek', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ api_key: '' }),
+      });
+    }
+    state.settings = view;
+    renderSettings(view);
+    toast('已清除');
+    await loadCapabilities();
+  } catch (err) {
+    showFormError('#sDsError', err.message);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+/* 后端会把上游的原始报错原样塞进 detail，里面常常是几百字的 JSON。
+   直接把整段贴出来会把面板撑爆、且用户只需要那句 "key 无效"。
+   能从 JSON 里抠出 message 就只显示 message，抠不出就截断。 */
+function prettyDetail(text) {
+  const raw = String(text ?? '').trim();
+  if (!raw) return '';
+  const m = raw.match(/"message"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+  let msg = m ? m[1].replace(/\\"/g, '"').replace(/\\n/g, ' ') : raw.replace(/\s+/g, ' ');
+  if (msg.length > 180) msg = msg.slice(0, 180) + '…';
+  /* 上游的鉴权报错里会回显 key 的尾部（****wxyz）。那不是我们泄露的，
+     但也没必要留在屏幕上，收一下。 */
+  return msg.replace(/\*{2,}[A-Za-z0-9]{2,}/g, '****');
+}
+
+async function testConnection() {
+  const out = $('#sTestOut');
+  const hint = $('#sTestHint');
+  out.className = 's-test-out';
+  out.textContent = '测试中…';
+  hint.hidden = true;
+  hint.textContent = '';
+  try {
+    const res = await api('/settings/test', { method: 'POST' });
+    const ok = !!(res && (res.ok || res.success || res.available));
+    out.className = 's-test-out ' + (ok ? 'ok' : 'bad');
+    out.textContent = ok ? `连接成功${res.model ? ' · ' + res.model : ''}` : '连接失败';
+    if (!ok && res && res.detail) {
+      out.textContent = '连接失败';
+      hint.textContent = prettyDetail(res.detail);
+      hint.hidden = false;
+    }
+  } catch (err) {
+    /* 后端可能压根没实现这个端点（404）—— 这是可选项，不能因此报错吓人 */
+    const notFound = /404|Not Found/i.test(err.message);
+    out.className = 's-test-out';
+    out.textContent = notFound ? '这个版本后端没有提供测试接口' : '测试失败';
+    hint.textContent = notFound
+      ? '可以保存后直接跑一次解析，用真实调用验证。'
+      : prettyDetail(err.message);
+    hint.hidden = false;
+  }
+}
+
+/* ---- 用量 ---- */
+
+async function loadUsage() {
+  try {
+    const data = await api('/usage?days=30');
+    state.usage = data;
+    state.usageError = '';
+    renderUsage(data);
+  } catch (err) {
+    state.usage = null;
+    state.usageError = err.message;
+    renderUsage(null, err.message);
+  }
+}
+
+function renderUsage(data, errMsg) {
+  const empty = $('#uEmpty');
+  const sections = $('#uSections');
+  const totalCost = $('#uTotalCost');
+  const totalSub = $('#uTotalSub');
+  const pricing = $('.u-pricing');
+
+  if (errMsg) {
+    empty.hidden = false;
+    sections.hidden = true;
+    totalCost.textContent = '—';
+    totalSub.textContent = '用量接口暂时不可用';
+    empty.querySelector('p').textContent = '读不到用量';
+    empty.querySelector('span').textContent = '后端可能还没部署用量接口；不影响配置和使用。';
+    if (pricing) pricing.hidden = true;
+    return;
+  }
+
+  if (pricing) pricing.hidden = false;
+  empty.querySelector('p').textContent = '还没有使用记录';
+  empty.querySelector('span').textContent = '转写、识别图片或跑一次解析之后，这里会显示估算消耗。';
+
+  const total = (data && data.total) || {};
+  const count = (data && data.event_count) || 0;
+  const cost = Number(total.estimated_cost) || 0;
+
+  totalCost.textContent = fmtMoney(cost);
+  totalSub.textContent = count ? `${count} 次调用` : '还没有使用记录';
+
+  /* 单价回填：用户改过单价后，这里读到的就是 settings 里的值 */
+  const p = (data && data.pricing) || {};
+  if (p.asr_per_hour != null) $('#pAsr').value = p.asr_per_hour;
+  if (p.ocr_per_image != null) $('#pOcr').value = p.ocr_per_image;
+  if (p.llm_input_per_mtok != null) $('#pIn').value = p.llm_input_per_mtok;
+  if (p.llm_output_per_mtok != null) $('#pOut').value = p.llm_output_per_mtok;
+
+  if (!count) {
+    empty.hidden = false;
+    sections.hidden = true;
+    return;
+  }
+  empty.hidden = true;
+  sections.hidden = false;
+
+  /* 按类型：只显示有量的种类，全零的行对用户没信息 */
+  const byKind = (data.by_kind || []).filter((b) => {
+    const tok = (Number(b.prompt_tokens) || 0) + (Number(b.completion_tokens) || 0);
+    return (Number(b.audio_seconds) || 0) > 0 || (Number(b.images) || 0) > 0 || tok > 0
+      || (Number(b.estimated_cost) || 0) > 0;
+  });
+  $('#uKinds').innerHTML = byKind.length
+    ? byKind.map((b) => {
+      const label = KIND_LABEL[b.key] || b.key || '其他';
+      return `<div class="u-row">
+        <span class="u-row-k">${esc(label)}</span>
+        <span class="u-row-v">${esc(usageAmount(b.key, b))}</span>
+        <span class="u-row-c">¥${fmtMoney(b.estimated_cost)}</span>
+      </div>`;
+    }).join('')
+    : '<div class="u-row"><span class="u-row-v">还没有分类数据</span></div>';
+
+  /* 按天：契约里 by_day 是倒序，取前 7 天；条的宽度按最大值归一 */
+  const days = (data.by_day || []).slice(0, USAGE_BARS);
+  const max = days.reduce((m, d) => Math.max(m, Number(d.estimated_cost) || 0), 0);
+  /* 标题上写实际覆盖的日期区间，而不是「最近 N 天」。
+     后端只返回有记录的日子时，N 天会误导 —— 7 根条可能横跨三周。 */
+  const label = (() => {
+    if (days.length < 2) return ''; // 只有一天时下面那行的日期就是它，别重复
+    const short = (k) => String(k || '').slice(5);
+    return `${short(days[days.length - 1].key)} – ${short(days[0].key)}`;
+  })();
+  $('#uDaysLabel').textContent = label;
+  $('#uBars').innerHTML = days.length
+    ? days.map((d) => {
+      const c = Number(d.estimated_cost) || 0;
+      const pct = max > 0 ? Math.max(c > 0 ? 2 : 0, Math.round((c / max) * 100)) : 0;
+      /* 0 的那天不画填充块：留 2px 的 min-width 会在窄条上显出一个
+         莫名其妙的小方块，看起来像「花了 2px 的钱」 */
+      const fill = c > 0
+        ? `<i class="u-bar-fill" style="width:${pct}%"></i>`
+        : '';
+      return `<div class="u-bar${c > 0 ? '' : ' zero'}" title="${esc(d.key)} · ¥${fmtMoney(c)}">
+        <span class="u-bar-d">${esc(String(d.key || '').slice(5))}</span>
+        <span class="u-bar-track">${fill}</span>
+        <span class="u-bar-c">¥${fmtMoney(c)}</span>
+      </div>`;
+    }).join('')
+    : '<div class="u-row"><span class="u-row-v">最近没有记录</span></div>';
+}
+
+async function savePricing(e) {
+  if (e) e.preventDefault();
+  showFormError('#uPricingError', '');
+  const body = {
+    asr_per_hour: Number($('#pAsr').value) || 0,
+    ocr_per_image: Number($('#pOcr').value) || 0,
+    llm_input_per_mtok: Number($('#pIn').value) || 0,
+    llm_output_per_mtok: Number($('#pOut').value) || 0,
+  };
+  const btn = $('#uPricingSave');
+  btn.disabled = true;
+  try {
+    await api('/settings/pricing', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    toast('单价已更新');
+    /* 费用是后端按单价算的，改完必须重新拉一次，不能在前端自己乘一遍 */
+    await loadUsage();
+  } catch (err) {
+    showFormError('#uPricingError', err.message);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 /* ------------------------------------------------------------ 事件绑定 */
 
 function bind() {
+  // ---- 设置面板（模型 / API Key / 用量）
+  $('#settingsBtn').addEventListener('click', () => openSettings());
+  $('#settingsClose').addEventListener('click', closeSettings);
+  $('#settingsWrap').addEventListener('click', (e) => {
+    /* 只有点在遮罩本身才关；点面板内部不能关 */
+    if (e.target === $('#settingsWrap')) closeSettings();
+  });
+  $$('.stab').forEach((b) => {
+    b.addEventListener('click', () => setSettingsTab(b.dataset.stab));
+    /* tablist 的 roving tabindex：左右键切换，和结果面板那几个 tab 一致 */
+    b.addEventListener('keydown', (e) => {
+      if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
+      e.preventDefault();
+      const next = b.dataset.stab === 'model' ? 'usage' : 'model';
+      setSettingsTab(next);
+      $(next === 'model' ? '#stabModel' : '#stabUsage').focus();
+    });
+  });
+
+  // 显示 / 隐藏 Key
+  $('#sApiKeyEye').addEventListener('click', () => toggleKeyVisible('#sApiKey', '#sApiKeyEye'));
+  $('#sDsKeyEye').addEventListener('click', () => toggleKeyVisible('#sDsKey', '#sDsKeyEye'));
+
+  // 保存 / 清除
+  $('#sLlmSave').addEventListener('click', saveLLM);
+  $('#sLlmClear').addEventListener('click', () => armClear('llm'));
+  $('#sDsSave').addEventListener('click', saveDeepseek);
+  $('#sDsClear').addEventListener('click', () => armClear('ds'));
+  $('#sTestBtn').addEventListener('click', testConnection);
+
+  // 表单里按 Enter 等于点保存（只有单行输入，没有需要换行的东西）
+  ['#sBaseUrl', '#sApiKey', '#sModel'].forEach((sel) => {
+    $(sel).addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); saveLLM(); }
+    });
+  });
+  $('#sDsKey').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); saveDeepseek(); }
+  });
+
+  // 用量
+  $('#uRefresh').addEventListener('click', loadUsage);
+  $('#uPricingForm').addEventListener('submit', savePricing);
+
   // ---- 主题 / 命令面板
   $('#themeBtn').addEventListener('click', toggleTheme);
   $('#paletteBtn').addEventListener('click', openPalette);
@@ -2581,6 +3241,14 @@ function bind() {
   // ---- 全局快捷键
   document.addEventListener('keydown', (e) => {
     const meta = e.metaKey || e.ctrlKey;
+
+    /* 设置面板是模态的：开着的时候其他全局快捷键（⌘K、⌘Enter、/）都不该生效，
+       只留 Esc 关闭 + Tab 陷阱。否则用户在里面按 ⌘K 会叠出第二层弹层。 */
+    if (!$('#settingsWrap').hidden) {
+      if (e.key === 'Escape') { e.preventDefault(); closeSettings(); return; }
+      trapSettingsFocus(e);
+      return;
+    }
 
     if (meta && e.key.toLowerCase() === 'k') {
       e.preventDefault();

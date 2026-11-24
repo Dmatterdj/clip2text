@@ -90,6 +90,24 @@ CREATE TABLE IF NOT EXISTS analyses (
 );
 
 CREATE INDEX IF NOT EXISTS idx_analyses_state ON analyses(state);
+
+-- 用量账本（契约 docs/SETTINGS-CONTRACT.md §8）。
+-- 只追加不修改：这是「花过多少钱」的历史记录，删任务**不删**这里的行，
+-- 否则用户删掉一个任务就会觉得自己没花过那笔钱。
+CREATE TABLE IF NOT EXISTS usage_events (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind              TEXT NOT NULL,
+    task_id           TEXT,
+    model             TEXT NOT NULL DEFAULT '',
+    audio_seconds     REAL NOT NULL DEFAULT 0,
+    images            INTEGER NOT NULL DEFAULT 0,
+    prompt_tokens     INTEGER NOT NULL DEFAULT 0,
+    completion_tokens INTEGER NOT NULL DEFAULT 0,
+    created_at        TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_usage_created ON usage_events(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_usage_kind ON usage_events(kind);
 """
 
 
@@ -436,3 +454,135 @@ class Database:
         if count:
             log.info("启动清理：%d 个 RUNNING 分析标记为 FAILED", count)
         return count
+
+    # ---------------- 用量账本 ----------------
+    # 只追加、只聚合。注意 delete() 里**没有**删 usage_events ——
+    # 删任务不该抹掉已经花掉的钱（契约 §8）。
+    _USAGE_SUMS = (
+        "SUM(audio_seconds) AS audio_seconds, "
+        "SUM(images) AS images, "
+        "SUM(prompt_tokens) AS prompt_tokens, "
+        "SUM(completion_tokens) AS completion_tokens"
+    )
+
+    def add_usage_event(
+        self,
+        *,
+        kind: str,
+        task_id: str | None = None,
+        model: str = "",
+        audio_seconds: float = 0.0,
+        images: int = 0,
+        prompt_tokens: int = 0,
+        completion_tokens: int = 0,
+        created_at: datetime | None = None,
+    ) -> int:
+        """追加一条用量记录，返回自增 id。
+
+        埋点方（usage.record）负责吞异常；这里让异常照常抛出，
+        否则「写失败」会被静默吞掉两层，排查时无从下手。
+        """
+        stamp = _dt_to_str(created_at or utcnow())
+        with self._lock:
+            cur = self._conn.execute(
+                """
+                INSERT INTO usage_events (
+                    kind, task_id, model, audio_seconds, images,
+                    prompt_tokens, completion_tokens, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(kind),
+                    str(task_id) if task_id else None,
+                    str(model or ""),
+                    float(audio_seconds or 0.0),
+                    int(images or 0),
+                    int(prompt_tokens or 0),
+                    int(completion_tokens or 0),
+                    stamp,
+                ),
+            )
+            self._conn.commit()
+            return int(cur.lastrowid or 0)
+
+    def usage_totals(self) -> dict[str, float]:
+        """全量合计。空表返回全 0，而不是 None（前端不用判空）。"""
+        with self._lock:
+            row = self._conn.execute(
+                f"SELECT {self._USAGE_SUMS} FROM usage_events"
+            ).fetchone()
+        return _usage_row_to_dict(row)
+
+    def usage_by_kind(self) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT kind AS key, {self._USAGE_SUMS} "
+                "FROM usage_events GROUP BY kind"
+            ).fetchall()
+        return [_usage_row_to_dict(r, key_field="key") for r in rows]
+
+    def usage_by_model(self) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT CASE WHEN model = '' THEN 'unknown' ELSE model END AS key, "
+                f"{self._USAGE_SUMS} FROM usage_events GROUP BY key"
+            ).fetchall()
+        return [_usage_row_to_dict(r, key_field="key") for r in rows]
+
+    def usage_by_day(self, since: str | None = None, offset_minutes: int = 0) -> list[dict[str, Any]]:
+        """按「本地日」聚合，倒序。
+
+        `created_at` 存的是 UTC 的 ISO 字符串（`utcnow()` → `+00:00`），
+        而 SQLite 的 `date()` **直接截取日期部分、忽略时区偏移**：
+        `date('2026-11-23T23:59:00+00:00')` → `2026-11-23`，
+        对北京用户来说那条记录的「本地日」其实是 11-24。
+        所以必须显式把偏移加上去：`date(created_at, '+480 minutes')`。
+
+        偏移由调用方（usage.py）按服务端本地时区算好传进来 —— SQLite
+        不知道进程的时区，硬编码 +8 会在别的时区部署时全错。
+        用**分钟**而不是小时：印度 +05:30、尼泊尔 +05:45 这类半小时/
+        刻钟时区用 `hours` 会算错（`-5.5 hours` 在 SQLite 里不生效）。
+        """
+        modifier = f"{int(offset_minutes):+d} minutes"
+        where = f"WHERE date(created_at, '{modifier}') >= ?" if since else ""
+        params: list[Any] = [since] if since else []
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT date(created_at, '{modifier}') AS key, {self._USAGE_SUMS} "
+                f"FROM usage_events {where} GROUP BY key ORDER BY key DESC",
+                params,
+            ).fetchall()
+        return [_usage_row_to_dict(r, key_field="key") for r in rows]
+
+    def usage_event_count(self) -> int:
+        with self._lock:
+            row = self._conn.execute("SELECT COUNT(*) AS c FROM usage_events").fetchone()
+        return int(row["c"])
+
+    def list_usage_events(self, *, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
+        """原始记录，倒序。给「最近调用」列表和测试断言用。"""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM usage_events ORDER BY id DESC LIMIT ? OFFSET ?",
+                (limit, offset),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def delete_all_usage(self) -> int:
+        """清空用量账本。只由用户显式调用（DELETE /usage），不随删任务触发。"""
+        with self._lock:
+            cur = self._conn.execute("DELETE FROM usage_events")
+            self._conn.commit()
+        return int(cur.rowcount or 0)
+
+
+def _usage_row_to_dict(row: sqlite3.Row, *, key_field: str | None = None) -> dict[str, Any]:
+    keys = row.keys()
+    out: dict[str, Any] = {}
+    if key_field:
+        out["key"] = row[key_field]
+    for name in ("audio_seconds", "images", "prompt_tokens", "completion_tokens"):
+        if name in keys:
+            value = row[name]
+            out[name] = 0 if value is None else value
+    return out

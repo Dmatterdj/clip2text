@@ -14,8 +14,9 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import dataclass, field
+from typing import Any
 
 import httpx
 
@@ -24,6 +25,55 @@ log = logging.getLogger(__name__)
 
 class LLMError(RuntimeError):
     pass
+
+
+# ---------------------------------------------------------------- 用量埋点
+# 为什么用模块级 sink 而不是直接调用 db：
+#   改写的入口在 api/batch_routes.py（不在本次改动范围），
+#   而 stream_rewrite 本身又拿不到 Database。所以在 llm 里留一个
+#   「谁想记账谁注册」的钩子，由 AppState 在构造时接上。
+#   钩子抛异常一律吞掉：记账失败绝不能打断正在输出的改写流。
+_usage_sink: Callable[[dict[str, Any]], None] | None = None
+
+
+def set_usage_sink(sink: Callable[[dict[str, Any]], None] | None) -> None:
+    """注册改写用量回调（AppState 构造时调用，shutdown 时置 None）。"""
+    global _usage_sink
+    _usage_sink = sink
+
+
+def _emit_usage(payload: dict[str, Any]) -> None:
+    sink = _usage_sink
+    if sink is None:
+        return
+    try:
+        sink(payload)
+    except Exception:  # noqa: BLE001 - 埋点不能影响主流程
+        log.warning("改写用量埋点失败（已忽略）：model=%s", payload.get("model"))
+
+
+def _merge_usage(total: dict[str, int], usage: object) -> None:
+    """把上游的 usage 累计进 total。
+
+    不同兼容实现的字段名不完全一样（prompt_tokens / input_tokens），
+    都认一遍；拿不到的维度保持 0，不猜。
+    """
+    if not isinstance(usage, Mapping):
+        return
+    total["prompt_tokens"] += _as_token(usage.get("prompt_tokens", usage.get("input_tokens")))
+    total["completion_tokens"] += _as_token(
+        usage.get("completion_tokens", usage.get("output_tokens"))
+    )
+
+
+def _as_token(value: object) -> int:
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, int):
+        return max(0, value)
+    if isinstance(value, float) and value == value:
+        return max(0, int(value))
+    return 0
 
 
 @dataclass
@@ -152,8 +202,19 @@ async def stream_rewrite(
     config: LLMConfig,
     style_key: str = DEFAULT_STYLE,
     extra_instruction: str | None = None,
+    *,
+    task_id: str | None = None,
+    usage_out: dict[str, int] | None = None,
 ) -> AsyncIterator[str]:
-    """流式改写。逐段 yield 文本增量，适合直接塞进 SSE。"""
+    """流式改写。逐段 yield 文本增量，适合直接塞进 SSE。
+
+    用量（契约 §7 的 rewrite）：
+      · 请求里带 `stream_options.include_usage`，OpenAI 兼容服务会在最后
+        一帧（`choices` 为空）带上 usage；不支持的实现会直接忽略这个字段
+      · 没有 usage 帧时 tokens 记 0，**不猜**（契约原文：「否则 tokens 记 0」）
+      · 生成器被提前关闭（前端断开）也会在 finally 里上报：上游已经
+        计费了，用户断开连接不等于没花钱
+    """
     if not config.configured:
         raise LLMError("未配置 LLM_BASE_URL / LLM_MODEL，AI 改写不可用")
     if not text.strip():
@@ -163,12 +224,19 @@ async def stream_rewrite(
         "model": config.model,
         "messages": _build_messages(text, style_key, extra_instruction),
         "stream": True,
+        # 不给这个字段，流式响应里通常完全不返回 usage，rewrite 的
+        # token 就永远记 0
+        "stream_options": {"include_usage": True},
         "temperature": config.temperature,
     }
     headers = {"Content-Type": "application/json", **config.extra_headers}
     if config.api_key:
         headers["Authorization"] = f"Bearer {config.api_key}"
 
+    usage_total = {"prompt_tokens": 0, "completion_tokens": 0}
+    # 只有真的和上游建立了 200 响应才记账：403/401 这种请求根本没产生
+    # token，记一条全 0 的 rewrite 只会让用量面板的「调用次数」虚高。
+    billable = False
     try:
         async with httpx.AsyncClient(timeout=config.timeout) as client:
             async with client.stream(
@@ -177,6 +245,7 @@ async def stream_rewrite(
                 if resp.status_code != 200:
                     body = (await resp.aread()).decode("utf-8", "ignore")[:400]
                     raise LLMError(f"LLM 返回 {resp.status_code}: {body}")
+                billable = True
                 async for line in resp.aiter_lines():
                     if not line or not line.startswith("data:"):
                         continue
@@ -187,11 +256,27 @@ async def stream_rewrite(
                         obj = json.loads(data)
                     except json.JSONDecodeError:
                         continue
+                    # usage 帧：OpenAI 兼容实现的最后一帧 choices 为空，
+                    # 只有 usage。先收下来，正常文本增量照旧往下传。
+                    _merge_usage(usage_total, obj.get("usage"))
                     delta = _extract_delta(obj)
                     if delta:
                         yield delta
     except httpx.HTTPError as exc:
         raise LLMError(f"LLM 请求失败：{exc}") from exc
+    finally:
+        if usage_out is not None:
+            usage_out.update(usage_total)
+        if billable:
+            _emit_usage(
+                {
+                    "task_id": task_id,
+                    "model": config.model,
+                    "prompt_tokens": usage_total["prompt_tokens"],
+                    "completion_tokens": usage_total["completion_tokens"],
+                }
+            )
+
 
 
 def _extract_delta(obj: dict) -> str:
@@ -214,9 +299,19 @@ async def rewrite_once(
     config: LLMConfig,
     style_key: str = DEFAULT_STYLE,
     extra_instruction: str | None = None,
+    *,
+    task_id: str | None = None,
+    usage_out: dict[str, int] | None = None,
 ) -> str:
     """非流式封装，供 CLI 和测试使用。"""
     parts: list[str] = []
-    async for chunk in stream_rewrite(text, config, style_key, extra_instruction):
+    async for chunk in stream_rewrite(
+        text,
+        config,
+        style_key,
+        extra_instruction,
+        task_id=task_id,
+        usage_out=usage_out,
+    ):
         parts.append(chunk)
     return "".join(parts)
