@@ -427,6 +427,17 @@ function renderNotices(caps) {
       `<b>没找到 ffmpeg。</b>转码和切分依赖它，先装 ffmpeg 或设置 <code>FFMPEG_MODE</code>。`));
   }
 
+  // LLM 未配置也要说一声。
+  // 之前「解析」和「改写」在不可用时整个隐藏，用户既不知道有这个功能，
+  // 也不知道差什么才能用 —— 等于功能不存在。现在改成显式告知。
+  if (!analysisAvailable(caps)) {
+    items.push(noticeHtml('', 'spark',
+      `<b>内容解析和 AI 改写未启用。</b>配置 <code>LLM_BASE_URL</code> + <code>LLM_MODEL</code> `
+      + `（可指向 Ollama 等本地服务），或配置 <code>DEEPSEEK_API_KEY</code> 后重启服务，`
+      + `即可对长文本生成摘要、章节与要点。`
+      + (analysisReason(caps) ? `<br><span class="hint">${esc(analysisReason(caps))}</span>` : '')));
+  }
+
   box.innerHTML = items.join('');
   box.hidden = items.length === 0;
 }
@@ -497,11 +508,11 @@ async function loadCapabilities() {
       await loadStyles();
     }
 
-    /* 解析同理。载荷里没有 analysis 字段（旧后端）时也隐藏。 */
+    /* 解析 tab 常显。
+       早期版本在不可用时把 tab 整个隐藏，结果是用户根本不知道有这个功能，
+       更不知道该配什么才能用。现在改成：tab 一直在，进去后如实说明缺什么。 */
     state.anaAvailable = analysisAvailable(caps);
-    $('#analysisTab').hidden = !state.anaAvailable;
-    /* 后端说不可用时，如果用户正好停在解析 tab，退到正文，别留一个空面板 */
-    if (!state.anaAvailable && state.tab === 'analysis') setTab('text');
+    $('#analysisTab').hidden = false;
   } catch (err) {
     $('#caps').innerHTML = pill('能力探测失败', 'bad', err.message);
     toast('无法读取本机能力：' + err.message, 'err');
@@ -1359,6 +1370,36 @@ function renderAnalysisEmpty() {
   anaBar('', '尚未解析');
   anaButtons(false, false);
   showAnaProgress(false);
+
+  /* LLM 未配置：给出明确的开启方式，而不是一个点了会 400 的按钮。
+     这比把 tab 藏起来友好得多 —— 藏起来等于功能不存在。 */
+  if (!state.anaAvailable) {
+    $('#anaBody').innerHTML = `<div class="ana-empty">
+      <svg class="ico" aria-hidden="true"><use href="#i-spark"></use></svg>
+      <p class="ana-empty-title">内容解析尚未启用</p>
+      <p class="ana-empty-text">
+        解析会把这份转写交给大模型，提取一句话摘要、带时间戳的章节、关键要点和金句。
+        章节与金句的时间戳可以直接点，跳回对应的分句位置。
+      </p>
+      <div class="ana-setup">
+        <p class="ana-setup-title">开启方式（二选一）</p>
+        <p class="ana-setup-line">
+          <b>方式一：</b>在 <code>.env</code> 里配置任意 OpenAI 兼容服务
+          <br><code>LLM_BASE_URL=</code> <code>LLM_MODEL=</code> <code>LLM_API_KEY=</code>
+          <br><span class="hint">可指向本地 Ollama，例如 LLM_BASE_URL=http://localhost:11434/v1</span>
+        </p>
+        <p class="ana-setup-line">
+          <b>方式二：</b>只配一个 <code>DEEPSEEK_API_KEY</code>
+          <br><span class="hint">会自动复用为分析模型（deepseek-chat），与语音识别共用同一个 key</span>
+        </p>
+        <p class="ana-setup-line">改完 <code>.env</code> 后重启服务（<code>clip2text serve</code>）即可。</p>
+      </div>
+      ${state.caps && state.caps.analysis && state.caps.analysis.reason
+        ? `<p class="ana-empty-text hint">当前状态：${esc(state.caps.analysis.reason)}</p>` : ''}
+    </div>`;
+    return;
+  }
+
   $('#anaBody').innerHTML = `<div class="ana-empty">
     <svg class="ico" aria-hidden="true"><use href="#i-scan"></use></svg>
     <p class="ana-empty-title">还没有解析结果</p>
@@ -1496,12 +1537,20 @@ function renderAnalysis(a) {
 
 /* 打开解析 tab 时拉一次已有结果；同一个任务不重复打接口 */
 async function openAnalysis() {
-  if (!state.anaAvailable) return;
   const id = state.taskId;
   if (!id) return;
   anaSourceLine();
   if (state.anaFor === id && state.anaView !== 'idle') return;
   state.anaFor = id;
+
+  /* LLM 未配置时不要去请求接口（必然 400），直接渲染配置指引。
+     注意这里不能提前 return —— tab 现在常显，早退会导致面板一片空白，
+     用户看到的只是一个「–」，比隐藏 tab 更让人困惑。 */
+  if (!state.anaAvailable) {
+    renderAnalysisEmpty();
+    setAnaView('empty');
+    return;
+  }
   await loadAnalysis(id);
 }
 
@@ -2428,6 +2477,11 @@ function bind() {
   anaBody.addEventListener('click', async (e) => {
     const startBtn = e.target.closest('[data-ana-start]');
     if (startBtn) {
+      // 兜底：不可用时不该发出必然 400 的请求（正常路径下这个按钮不会渲染出来）
+      if (!state.anaAvailable) {
+        toast(analysisReason(), 'err', 5200);
+        return;
+      }
       startBtn.disabled = true;
       startAnalyze(false);
       return;
