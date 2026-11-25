@@ -1,6 +1,6 @@
 [project]
 name = "clip2text"
-version = "0.1.0"
+version = "1.0.0"
 description = "把视频/音频链接或本地文件转成文字：播客、知识科普、讲座，本地优先、默认零 API key"
 readme = "README.md"
 requires-python = ">=3.11,<3.13"

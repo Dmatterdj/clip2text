@@ -1,11 +1,11 @@
 # clip2text
 
-![version](https://img.shields.io/badge/version-0.1.0-blue)
+![version](https://img.shields.io/badge/version-1.0.0-blue)
 ![python](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue)
 ![license](https://img.shields.io/badge/license-Apache--2.0-green)
 
-> **0.1.0 是早期版本。** 核心链路（链接/上传 → 转写 → 导出）已稳定，
-> 但 HTTP API 与配置项在 1.0 之前可能调整。生产使用请锁定版本。
+> **1.0.0**：核心能力已稳定（链接/上传 → 转写 → OCR → 解析 → 导出）。
+> 配置全部可在界面完成，无需改文件或重启。
 
 把视频、音频、图片里的内容，提取成可编辑的文字。**本地优先、默认零 API key、不上传第三方。**
 
@@ -481,6 +481,12 @@ yt-dlp 不支持这两个，需要自己写插件（或等社区提供）。这�
 音频：wav / mp3 / m4a / aac / flac / ogg / opus / wma / amr / aiff
 视频：mp4 / mov / mkv / avi / webm / flv / wmv / m4v / ts / 3gp
 图片：jpg / png / webp / bmp / gif / tiff
+
+---
+
+## 更新日志
+
+各版本变更见 [CHANGELOG.md](CHANGELOG.md)。
 
 ---
 
